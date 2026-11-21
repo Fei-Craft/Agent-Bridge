@@ -5,6 +5,16 @@ description: Coordinate local worker agents (Grok Build, Kimi Code, Antigravity,
 
 # Dispatching workers through Agent Bridge
 
+## Central hub / 中央 Hub
+
+Start `agent-bridge serve` before coordinators to share one Registry. Existing MCP
+entries automatically proxy to it; `list_agents.backend` reports hub or local.
+In hub mode, workers may call peers with `agent-bridge ask AGENT MESSAGE --cwd DIR`
+or `agent-bridge call dispatch_task --agent AGENT --message MESSAGE --cwd DIR`.
+Honor routing preferences and absolute cwd; never dispatch into your own session.
+Peer depth is limited by `[hub] max_depth` (default 3). Do not expose bearer tokens.
+See HUB.md / HUB.zh-CN.md. 先运行 Hub，即可通过共享 API 调用同伴。
+
 You are the coordinator: users talk only to you, and you call the workers. Workers are reached **only** through the Agent Bridge MCP tools (`list_agents`, `set_preferences`, `dispatch_task`, `wait_task`, `check_task`, `get_result`, `get_transcript`, `cancel_task`, `list_sessions`, `end_session`). If those tools are missing from this session, stop and say so — never run `grok`, `kimi`, `agy`, `dsh`, `opencode`, `claude`, `claude-agent-acp`, `codex`, `devin`, `zcode-acp-server`, or `mcode` CLIs directly, and never drive their GUIs. The same product can be a coordinator and a worker; those are different processes.
 
 ## Before anything: read the policy

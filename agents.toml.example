@@ -1,6 +1,11 @@
 # Copy to %USERPROFILE%\.agent-bridge\agents.toml and uncomment what you need.
 # This file is the machine-local overlay (not the repo default).
 
+[hub]
+host = "127.0.0.1"
+port = 8765
+max_depth = 3
+
 # Behind a firewall only. A machine on a direct network needs no proxy;
 # a null env.proxy in list_agents is normal there.
 # [env.proxy]

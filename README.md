@@ -13,6 +13,12 @@
 
 ## English
 
+### Central hub
+
+Run `agent-bridge serve` once; coordinator MCP instances auto-proxy to its shared
+Registry. Any shell-capable agent can call peers with `agent-bridge ask` or
+`agent-bridge call`. See [Hub setup, REST API and security](HUB.md).
+
 Agent Bridge is a connector for local coding agents. A coordinator — Codex, Cursor, Kimi Code, ZCode, Grok Build, Claude Code, or Devin — directs Antigravity CLI, Grok Build, Kimi Code, DeepSeek Harness, OpenCode, Claude Code, Codex CLI, Devin CLI, ZCode, and MiniMax Code. The same product can be a coordinator and a worker; those are different processes. More agents will follow.
 
 ```text
@@ -167,6 +173,12 @@ uv run pytest
 `tests/` is pytest only. Live coordinator drills use a local `lab/` folder from `scripts/setup_lab.py` — that directory is not in git.
 
 ## 中文
+
+### 中央 Hub
+
+先启动 `agent-bridge serve`，协调器 MCP 会自动代理到共享 Registry。
+任何支持 shell 的 agent 都能用 `agent-bridge ask` / `call` 调用同伴。
+参见 [Hub 配置与安全说明](HUB.zh-CN.md)。
 
 Agent Bridge 是一个联通各个本地 Agent 的连接器。由协调者——Codex、Cursor、Kimi Code、ZCode、Grok Build、Claude Code 或 Devin——指挥 Antigravity CLI、Grok Build、Kimi Code、DeepSeek Harness、OpenCode、Claude Code、Codex CLI、Devin CLI、ZCode、MiniMax Code 进行工作。同一个产品可以同时是协调者和 Worker，但那是不同进程。后续将推出更多 Agent 支持。
 
