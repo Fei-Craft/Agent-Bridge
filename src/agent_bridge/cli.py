@@ -43,7 +43,7 @@ Usage:
   agent-bridge help            this text
   agent-bridge serve [--host HOST] [--port PORT] [--allow-remote]
   agent-bridge call TOOL [--key value ...]   call a running hub (JSON output)
-  agent-bridge ask AGENT MESSAGE [--cwd DIR] [--timeout SEC]
+  agent-bridge ask AGENT MESSAGE [--cwd DIR] [--timeout SEC] [--model MODEL] [--effort EFFORT]
 
 Install:
   uv tool install {GIT_SOURCE}
@@ -229,6 +229,8 @@ def hub_command(args: list[str]) -> None:
         parser.add_argument('message')
         parser.add_argument('--cwd', default=str(Path.cwd()))
         parser.add_argument('--timeout', type=float, default=180)
+        parser.add_argument('--model', default=argparse.SUPPRESS, help='model ID to pass to the worker')
+        parser.add_argument('--effort', default=argparse.SUPPRESS, help='reasoning effort to pass to the worker')
         options = parser.parse_args(args[1:])
         tool, values = 'invoke', vars(options)
         values['timeout_sec'] = values.pop('timeout')

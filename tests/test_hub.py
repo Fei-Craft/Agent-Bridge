@@ -179,9 +179,33 @@ def test_cli_call_ask(monkeypatch, capsys, tmp_path):
     cli.main(['call', 'list_sessions', '--active_only', 'true'])
     assert json.loads(capsys.readouterr().out)['ok']
     client.call.assert_awaited_with('list_sessions', active_only=True)
+    cli.main(['call', 'invoke', '--agent', 'opencode', '--model', 'opendesign/deepseek-v4.1-flash-eco'])
+    assert json.loads(capsys.readouterr().out)['ok']
+    client.call.assert_awaited_with('invoke', agent='opencode', model='opendesign/deepseek-v4.1-flash-eco')
     cli.main(['ask', 'fake', 'hello', '--cwd', str(tmp_path), '--timeout', '5'])
     assert capsys.readouterr().out == 'answer\n'
     client.call.assert_awaited_with('invoke', agent='fake', message='hello', cwd=str(tmp_path), timeout_sec=5)
     monkeypatch.setattr('agent_bridge.hub_client.discover', AsyncMock(return_value=None))
     with pytest.raises(RuntimeError, match='no running hub'):
         cli.main(['call', 'list_agents'])
+
+
+@pytest.mark.parametrize('model,effort', [('opendesign/deepseek-v4.1-flash-eco', 'high'), ('', '')])
+def test_cli_ask_model_effort(monkeypatch, capsys, tmp_path, model, effort):
+    client = types.SimpleNamespace(call=AsyncMock(return_value={'ok': True, 'result_text': 'answer'}))
+    monkeypatch.setattr('agent_bridge.hub_client.discover', AsyncMock(return_value=client))
+    cli.main(['ask', 'opencode', 'hello', '--cwd', str(tmp_path), '--model', model, '--effort', effort])
+    assert capsys.readouterr().out == 'answer\n'
+    client.call.assert_awaited_with('invoke', agent='opencode', message='hello', cwd=str(tmp_path),
+                                   timeout_sec=180, model=model, effort=effort)
+
+
+@pytest.mark.parametrize('option', ['--model', '--effort'])
+def test_cli_ask_missing_option_value(monkeypatch, capsys, option):
+    discover = AsyncMock()
+    monkeypatch.setattr('agent_bridge.hub_client.discover', discover)
+    with pytest.raises(SystemExit) as exc:
+        cli.main(['ask', 'opencode', 'hello', option])
+    assert exc.value.code == 2
+    assert f'argument {option}: expected one argument' in capsys.readouterr().err
+    discover.assert_not_awaited()

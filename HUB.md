@@ -57,7 +57,13 @@ curl -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8765/v1/tasks/TASK_ID/w
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/v1/tasks/TASK_ID/result
 agent-bridge call list_sessions --active_only true
 agent-bridge ask codex 'Review this project' --cwd /absolute/project --timeout 180
+agent-bridge ask opencode 'Review this project' --cwd /absolute/project --model opendesign/deepseek-v4.1-flash-eco --effort high
 ```
+
+`ask` forwards optional `--model` and `--effort` to invoke/dispatch. Omit them to
+use the worker's defaults. Model IDs and supported effort values depend on the
+worker/provider. `call invoke` and `call dispatch_task` also accept `--model` and
+`--effort` through their generic `--key value` arguments.
 
 A wait timeout is not failure. Invoke returns only the first result page; check
 status and retrieve further pages with get_result. Manual coordinator policy

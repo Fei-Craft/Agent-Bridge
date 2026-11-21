@@ -13,6 +13,11 @@
 host、port、max_depth（默认 3）；每次同伴调用深度加一，禁止调用自己的 session_id。
 worker 自动继承 Hub 地址、token、调用者 session id，嵌套 MCP 也会自动代理。
 
+`ask` 支持 `--model 模型ID` 和 `--effort 推理强度`，并原样传给 invoke/dispatch；
+省略时使用 worker 默认值。模型 ID 和支持的推理强度取决于 worker/供应商。例如：
+`agent-bridge ask opencode '检查项目' --cwd /绝对路径 --model opendesign/deepseek-v4.1-flash-eco`。
+`call invoke` / `call dispatch_task` 也可通过通用参数传入 `--model` 和 `--effort`。
+
 启动时在 bridge home 写入权限 0600 的 hub.json，包含地址、PID、随机 bearer token、
 启动时间，关闭时删除。发现顺序是环境变量 AGENT_BRIDGE_HUB_URL/TOKEN，然后检查
 hub.json 的 PID 与健康接口。`AGENT_BRIDGE_HUB=off` 可禁用发现。
