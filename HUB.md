@@ -71,6 +71,35 @@ still requires `user_requested:true` on dispatch/invoke (use `call invoke`).
 
 ## Peer calls and security
 
+### Headless CLI option and measurements
+
+Hub workers may use `protocol = "cli"` instead of ACP. Set it under
+`[agents.opencode]`, `[agents.claude]` or `[agents.cursor]` in the user overlay,
+restart the hub and create new sessions. Bundled defaults remain unchanged;
+switching back to `"acp"` restores the ACP command. See [CLI configuration and
+permission caveats](SETUP.md#optional-headless-cli-workers). HTTP, MCP and peer
+`ask --model ...` calls use the same hub-injected environment with either protocol.
+
+Compare protocols (fresh hubs, three fresh sessions per protocol, then one resumed
+turn per session; not a provider-throughput benchmark):
+
+```sh
+uv run python scripts/bench_protocols.py --agent opencode --model opencode/big-pickle --n 3
+```
+
+The script reports success counts and median/min/max seconds for first turns,
+first worker output and resumed turns, with per-sample artifacts under
+`~/agent-bridge-bench/`. First output means the first worker transcript event,
+including metadata/tool events, **not** necessarily the first visible text token.
+Only successful samples enter timing summaries; `null` means no usable samples.
+Resume success requires the follow-up answer and the same native session ID.
+Keep protocol order/cache/network effects in mind: this cannot by itself prove
+one protocol is faster. `--protocols cli acp` reverses order.
+Use `--opencode-config PATH` for a custom provider configuration whose key is an
+environment reference. Optional `--worker-wrapper PATH` wraps commands with
+`python PATH --exec COMMAND ARGS` (for credential-redacting wrappers). No environment
+or raw error bodies are printed; do not enable CLI debug logging around secrets.
+
 Workers inherit AGENT_BRIDGE_HUB_URL, AGENT_BRIDGE_HUB_TOKEN and
 AGENT_BRIDGE_CALLER_SESSION through the worker environment. `call`, `ask`, and
 nested MCP proxies send `X-Agent-Bridge-Caller` automatically. A worker may call

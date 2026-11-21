@@ -27,3 +27,10 @@ hub.json 的 PID 与健康接口。`AGENT_BRIDGE_HUB=off` 可禁用发现。
 持有 token 即可操作所有 session、启动 CLI。不要暴露到公网，远程使用需 TLS 隧道与防火墙。
 
 完整 REST 路由、curl 示例、分页与超时语义见 [HUB.md](HUB.md)。
+
+可选无头 CLI：在用户配置的 `[agents.opencode]`（也支持 claude/cursor 预设）下设置
+`protocol = "cli"`，重启 Hub 并新建 session；改回 `"acp"` 即可恢复，默认协议不变。
+两种协议都继承同伴调用环境。OpenCode/Claude CLI 预设会自动批准工具，仅用于可信目录。
+详细参数与解析器配置见 [SETUP.md](SETUP.md#optional-headless-cli-workers)。
+`uv run python scripts/bench_protocols.py --agent opencode --model opencode/big-pickle --n 3`
+可比较首轮、首个 worker 事件、续接轮耗时；首事件不一定是首个文本 token。

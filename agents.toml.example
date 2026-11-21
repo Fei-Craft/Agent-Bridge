@@ -6,6 +6,28 @@ host = "127.0.0.1"
 port = 8765
 max_depth = 3
 
+# Opt into a headless worker. ACP remains the bundled default. Restart the hub
+# (or local MCP server) after changing protocols; start a NEW session.
+# Presets exist for opencode, claude and cursor; no command override is needed.
+# [agents.opencode]
+# protocol = "cli"  # change back to "acp" to restore the ACP command
+# [agents.opencode.cli]
+# extra_args = ["--format", "json", "--auto", "--dir", "{cwd}", "--pure"]
+
+# Add any other one-shot CLI without Python code (argv, never a shell template):
+# [agents.my_cli]
+# protocol = "cli"
+# command = ["my-cli"]
+# revivable = true
+# [agents.my_cli.cli]
+# parser = "jsonl"  # text | jsonl | claude | opencode | cursor
+# prompt_args = ["-p", "{prompt}"]
+# prompt_stdin = false  # for stdin: true AND prompt_args = []
+# resume_args = ["--resume", "{session}"]
+# model_args = ["--model", "{model}"]
+# effort_args = ["--effort", "{effort}"]
+# extra_args = ["--output-format", "jsonl"]
+
 # Behind a firewall only. A machine on a direct network needs no proxy;
 # a null env.proxy in list_agents is normal there.
 # [env.proxy]

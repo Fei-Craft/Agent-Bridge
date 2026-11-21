@@ -10,6 +10,60 @@ uv tool install git+https://github.com/FeiZhuLulu/Agent-Bridge.git
 
 That is the whole install. Then register the MCP server in the coordinator. The first time a top-level host starts Bridge, the coordinator skill is written automatically (skipped if Bridge was inherited inside a worker); later starts rewrite it only after the bundled skill changed, so local edits survive restarts but not upgrades. Need [uv](https://docs.astral.sh/uv/) first.
 
+## Optional headless CLI workers
+
+ACP remains the default. To try a fresh subprocess per turn instead, add this to
+`~/.agent-bridge/agents.toml` (Windows: `%USERPROFILE%\.agent-bridge\agents.toml`):
+
+```toml
+[agents.opencode]
+protocol = "cli"
+```
+
+Restart the hub/local MCP server and start a new Bridge session. Set `protocol = "acp"`
+to switch back without repeating a command. OpenCode, Claude and Cursor have separate
+CLI presets under `[agents.NAME.cli]`; the ordinary `command` remains the ACP command.
+OpenCode uses `run --format json --auto`, Claude uses `-p --output-format stream-json`
+with verbose/partial events. These two presets' flags were checked against installed
+CLIs. Cursor uses `cursor-agent -p --output-format stream-json`; Cursor is not installed
+on the preparation machine, so verify its flags locally before use. No extra presets
+were guessed for other CLIs. Codex keeps its existing specialized `codex` protocol.
+
+**Permissions:** the OpenCode and Claude headless presets automatically approve tools
+(`--auto` / `--dangerously-skip-permissions`). Use only trusted projects. ACP's
+`permission_policy` does not govern CLI tools; configure their native flags instead.
+Cursor's preset does not force approval. Credentials are still the native CLI's
+environment/auth store; never embed a key in argv or configuration.
+
+For a new CLI, see the complete declarative example in `agents.toml.example`.
+`cli.command` optionally replaces the base `command` only for CLI mode. `extra_args`
+are followed by optional `resume_args`, `model_args`, `effort_args`, then `prompt_args`.
+Tokens support `{prompt}`, `{session}`, `{model}`, `{effort}`, `{cwd}`; escape literal
+braces as `{{` / `}}`. Each token remains one argv element, not shell code. For stdin
+prompts use `prompt_stdin = true` and `prompt_args = []`. Missing configured selection
+arguments are errors rather than silently ignoring a requested model/effort.
+
+Parsers `claude`/`cursor` consume stream-json assistant/result/session events;
+`opencode` consumes run JSON text/tool/step/token events. `jsonl` accepts objects with
+`type`, `session_id`, `model`, `usage`; `text` or `delta` strings append output, a
+`type="result"` with `result` replaces the final output, and `type="error"` fails
+the turn. `text` streams plain stdout (including output without newlines) and is
+stateless: it cannot discover a native conversation ID. JSON parsers tolerate
+non-JSON diagnostic lines but reject output with no JSON object events.
+
+Native session IDs are persisted and substituted into `resume_args` for follow-ups.
+A configured resumable CLI that fails to emit an ID cannot silently start a new
+conversation on its next turn. Cancellation kills the process tree; Registry's
+stall/total-turn limits, workspace-diff file detection, transcripts and hub peer
+environment injection are shared with the other protocols. Observed model falls
+back to the requested selection when the CLI does not report it; it is not an
+independent upstream routing verification.
+
+中文：在用户配置中给对应 agent 设置 `protocol = "cli"` 即可尝试无头 CLI；
+改回 `"acp"` 恢复。重启 Hub/MCP 并新建 session，不要跨协议续接。
+OpenCode/Claude 预设会自动批准工具调用，仅用于可信项目；CLI 不使用 ACP 的权限策略。
+自定义 CLI 可通过配置声明参数、stdin 提示、解析器与原生 session 续接，无需改 Python。
+
 ## Resolve the Agent Bridge executable
 
 Hosts must launch a real executable. A PowerShell function named `agent-bridge` is not resolved by ZCode or Grok child processes.
