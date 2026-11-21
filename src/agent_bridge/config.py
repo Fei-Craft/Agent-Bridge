@@ -5,7 +5,7 @@ import os
 import re
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -105,10 +105,22 @@ DEFAULT_INHERIT_KEYS = (
 )
 
 
+class CliConfig(BaseModel):
+    command: list[str] = Field(default_factory=list)
+    prompt_args: list[str] = Field(default_factory=lambda: ['{prompt}'])
+    prompt_stdin: bool = False
+    resume_args: list[str] = Field(default_factory=list)
+    model_args: list[str] = Field(default_factory=list)
+    effort_args: list[str] = Field(default_factory=list)
+    extra_args: list[str] = Field(default_factory=list)
+    parser: Literal['text', 'jsonl', 'claude', 'opencode', 'cursor'] = 'text'
+
+
 class AgentConfig(BaseModel):
     name: str
     protocol: str
     command: list[str]
+    cli: CliConfig = Field(default_factory=CliConfig)
     fallback_commands: list[list[str]] = Field(default_factory=list)
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
@@ -255,8 +267,8 @@ def _merge_agent_spec(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str
     for key, value in overlay.items():
         if value in (None, [], {}):
             continue
-        if key == "env" and isinstance(out.get("env"), dict) and isinstance(value, dict):
-            out["env"] = {**out["env"], **value}
+        if key in {"env", "cli"} and isinstance(out.get(key), dict) and isinstance(value, dict):
+            out[key] = {**out[key], **value}
         else:
             out[key] = value
     return out

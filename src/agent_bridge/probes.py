@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 from agent_bridge.claude_meta import apply_claude_gateway_env, claude_config_home, describe_claude_auth
+from agent_bridge.cli_exec import cli_command
 from agent_bridge.codex_exec import resolve_codex_command
 from agent_bridge.config import AgentConfig, EnvConfig
 from agent_bridge.devin_meta import apply_devin_env
@@ -123,6 +124,8 @@ async def probe_agent(cfg: AgentConfig, env_config: EnvConfig | None = None) -> 
         log_fill=False,
     )
     def _resolve_probe_command() -> list[str]:
+        if cfg.protocol == 'cli':
+            return cli_command(cfg)
         if cfg.name == "dsh":
             return resolve_dsh_command(cfg.command, cfg.fallback_commands)
         if cfg.protocol == "codex":
@@ -136,6 +139,10 @@ async def probe_agent(cfg: AgentConfig, env_config: EnvConfig | None = None) -> 
 
     details: list[str] = [f"command={command[0]}"]
     version = await _version_string(command[0])
+
+    if cfg.protocol == 'cli':
+        return {'agent': cfg.name, 'available': True, 'version': version or None,
+                'detail': '; '.join([*details, f'protocol=cli; parser={cfg.cli.parser}; one subprocess per turn'])}
 
     if cfg.name == "dsh":
         bin_path = next((arg for arg in command if arg.endswith((".js", ".ts"))), None)
@@ -284,7 +291,9 @@ def command_exists(cfg: AgentConfig, *, env: dict[str, str] | None = None) -> bo
     if cfg.protocol == "fake":
         return True
     try:
-        if cfg.name == "dsh":
+        if cfg.protocol == 'cli':
+            cli_command(cfg)
+        elif cfg.name == "dsh":
             resolve_dsh_command(cfg.command, cfg.fallback_commands)
         elif cfg.protocol == "codex":
             resolve_codex_command(

@@ -164,6 +164,7 @@ idle_unload_sec = 900
 
 [agents.cursor]
 protocol = "acp"
+cli = { command = ["cursor-agent"], extra_args = ["-p", "--output-format", "stream-json"], prompt_args = ["{prompt}"], resume_args = ["--resume", "{session}"], model_args = ["--model", "{model}"], parser = "cursor" }
 command = ["cursor-agent", "acp"]
 fallback_commands = [["agent", "acp"]]
 revivable = false
@@ -183,6 +184,7 @@ idle_unload_sec = 0
 
 [agents.claude]
 protocol = "acp"
+cli = { command = ["claude"], extra_args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions"], prompt_args = ["{prompt}"], resume_args = ["--resume", "{session}"], model_args = ["--model", "{model}"], effort_args = ["--effort", "{effort}"], parser = "claude" }
 # Product `claude` has no ACP profile. Bridge drives the published adapter
 # `@agentclientprotocol/claude-agent-acp` (bin `claude-agent-acp`). Auth is
 # `claude auth login` on disk, ANTHROPIC_API_KEY, or a gateway
@@ -194,6 +196,7 @@ idle_unload_sec = 900
 
 [agents.opencode]
 protocol = "acp"
+cli = { command = ["opencode", "run"], extra_args = ["--format", "json", "--auto", "--dir", "{cwd}"], prompt_args = ["{prompt}"], resume_args = ["--session", "{session}"], model_args = ["--model", "{model}"], effort_args = ["--variant", "{effort}"], parser = "opencode" }
 command = ["opencode", "acp"]
 # OpenCode has no product login. Providers (official Zen / Go, or any other
 # API-key connection added with `opencode auth`) are selected after
