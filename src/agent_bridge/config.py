@@ -212,7 +212,14 @@ class CoordinatorConfig(BaseModel):
     instructions: str = ""
 
 
+class HubConfig(BaseModel):
+    host: str = '127.0.0.1'
+    port: int = Field(default=8765, ge=1, le=65535)
+    max_depth: int = Field(default=3, ge=0)
+
+
 class AppConfig(BaseModel):
+    hub: HubConfig = Field(default_factory=HubConfig)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
     env: EnvConfig = Field(default_factory=EnvConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -472,7 +479,7 @@ def load_config(home: Path | None = None) -> AppConfig:
             f"{overlay_path} is not valid TOML: {exc}. "
             "Fix or delete the file, then restart the Bridge."
         ) from exc
-    supported_sections = {"agents", "env", "server", "coordinator", "quota"}
+    supported_sections = {"agents", "env", "server", "coordinator", "quota", "hub"}
     unsupported = sorted(set(overlay_raw) - supported_sections)
     warnings = []
     if unsupported:
@@ -510,6 +517,7 @@ def load_config(home: Path | None = None) -> AppConfig:
     coordinator = CoordinatorConfig.model_validate(coord_raw)
     quota = QuotaConfig.model_validate({**_coerce_quota(bundled_raw), **_coerce_quota(overlay_raw)})
     return AppConfig(
+        hub=HubConfig.model_validate({**bundled_raw.get('hub', {}), **overlay_raw.get('hub', {})}),
         agents=agents,
         env=env,
         server=server,

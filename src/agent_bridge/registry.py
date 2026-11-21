@@ -62,7 +62,13 @@ from agent_bridge.transcript import (
     recent_activity,
     worker_silence_sec,
 )
-from agent_bridge.worker_env import build_worker_env, describe_env, install_host_env, is_worker_context
+from agent_bridge.worker_env import (
+    build_worker_env,
+    describe_env,
+    hub_worker_context,
+    install_host_env,
+    is_worker_context,
+)
 from agent_bridge.workspace import merge_files_changed, snapshot_workspace
 
 log = logging.getLogger(__name__)
@@ -824,6 +830,8 @@ class Registry:
         started_monotonic = time.monotonic()
         task = self.tasks[task_id]
         session = self.sessions[task.session_id]
+        if hub_worker_context.get():
+            hub_worker_context.set({**hub_worker_context.get(), 'AGENT_BRIDGE_CALLER_SESSION': session.session_id})
         adapter = self._adapter_for(session)
         task.status = TaskStatus.running
         task.started_at = iso()

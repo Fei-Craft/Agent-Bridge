@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+import httpx2
+import psutil
+
+from agent_bridge.api import _error
+from agent_bridge.paths import bridge_home
+
+# tool: (HTTP method, path, path argument)
+ROUTES = {
+    'list_agents': ('GET', '/v1/agents', None),
+    'set_preferences': ('PUT', '/v1/preferences', None),
+    'dispatch_task': ('POST', '/v1/tasks', None),
+    'check_task': ('GET', '/v1/tasks/{task_id}', 'task_id'),
+    'wait_task': ('GET', '/v1/tasks/{task_id}/wait', 'task_id'),
+    'get_result': ('GET', '/v1/tasks/{task_id}/result', 'task_id'),
+    'cancel_task': ('POST', '/v1/tasks/{task_id}/cancel', 'task_id'),
+    'list_sessions': ('GET', '/v1/sessions', None),
+    'get_transcript': ('GET', '/v1/sessions/{session_id}/transcript', 'session_id'),
+    'end_session': ('DELETE', '/v1/sessions/{session_id}', 'session_id'),
+    'invoke': ('POST', '/v1/agents/{agent}/invoke', 'agent'),
+}
+
+
+class HubClient:
+    def __init__(self, url: str, token: str = '') -> None:
+        self.url = url.rstrip('/')
+        self.token = token
+
+    async def call(self, tool: str, **kwargs: Any) -> dict[str, Any]:
+        try:
+            return await self._call(tool, **kwargs)
+        except Exception as exc:
+            return _error(exc)
+
+    async def _call(self, tool: str, **kwargs: Any) -> dict[str, Any]:
+        method, path, key = ROUTES[tool]
+        if key:
+            path = path.format(**{key: kwargs.pop(key)})
+        headers = {'Authorization': f'Bearer {self.token}'}
+        caller = os.environ.get('AGENT_BRIDGE_CALLER_SESSION')
+        if caller:
+            headers['X-Agent-Bridge-Caller'] = caller
+        async with httpx2.AsyncClient(trust_env=False, timeout=None) as client:
+            options: dict[str, Any] = {'params': kwargs} if method == 'GET' else {'json': kwargs}
+            response = await client.request(method, self.url + path, headers=headers,
+                                            **options)
+            result: dict[str, Any] = response.json()
+        if tool == 'list_agents':
+            result.update(backend='hub', hub_url=self.url)
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        async def forward(**kwargs: Any) -> dict[str, Any]:
+            return await self.call(name, **kwargs)
+        if name not in ROUTES:
+            raise AttributeError(name)
+        return forward
+
+
+async def discover(home: Path | None = None) -> HubClient | None:
+    if os.environ.get('AGENT_BRIDGE_HUB', '').lower() == 'off':
+        return None
+    url = os.environ.get('AGENT_BRIDGE_HUB_URL')
+    token = os.environ.get('AGENT_BRIDGE_HUB_TOKEN', '')
+    try:
+        if not url:
+            info = json.loads(((home or bridge_home()) / 'hub.json').read_text())
+            if not psutil.pid_exists(int(info['pid'])):
+                return None
+            url, token = info['url'], info['token']
+        async with httpx2.AsyncClient(trust_env=False, timeout=2) as client:
+            response = await client.get(str(url).rstrip('/') + '/v1/health', headers={'Authorization': f'Bearer {token}'})
+            if response.status_code != 200 or not response.json().get('ok'):
+                return None
+        return HubClient(str(url), token)
+    except (OSError, ValueError, KeyError, httpx2.HTTPError):
+        return None

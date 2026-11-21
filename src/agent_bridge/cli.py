@@ -41,6 +41,9 @@ Usage:
   agent-bridge upgrade         one-command update (close coordinators first)
   agent-bridge install-skill   copy the coordinator skill into host skill dirs
   agent-bridge help            this text
+  agent-bridge serve [--host HOST] [--port PORT] [--allow-remote]
+  agent-bridge call TOOL [--key value ...]   call a running hub (JSON output)
+  agent-bridge ask AGENT MESSAGE [--cwd DIR] [--timeout SEC]
 
 Install:
   uv tool install {GIT_SOURCE}
@@ -206,6 +209,59 @@ def upgrade(
     return notes
 
 
+def hub_command(args: list[str]) -> None:
+    import argparse
+    import asyncio
+
+    from agent_bridge.hub import serve
+    from agent_bridge.hub_client import discover
+
+    parser = argparse.ArgumentParser(prog='agent-bridge ' + args[0])
+    if args[0] == 'serve':
+        parser.add_argument('--host')
+        parser.add_argument('--port', type=int)
+        parser.add_argument('--allow-remote', action='store_true')
+        options = parser.parse_args(args[1:])
+        serve(**vars(options))
+        return
+    if args[0] == 'ask':
+        parser.add_argument('agent')
+        parser.add_argument('message')
+        parser.add_argument('--cwd', default=str(Path.cwd()))
+        parser.add_argument('--timeout', type=float, default=180)
+        options = parser.parse_args(args[1:])
+        tool, values = 'invoke', vars(options)
+        values['timeout_sec'] = values.pop('timeout')
+    else:
+        if len(args) < 2:
+            parser.error('a tool name is required')
+        tool, values = args[1], {}
+        rest = args[2:]
+        if len(rest) % 2:
+            parser.error('expected --key value pairs')
+        for key, value in zip(rest[::2], rest[1::2], strict=True):
+            if not key.startswith('--'):
+                parser.error('expected --key value pairs')
+            try:
+                values[key[2:].replace('-', '_')] = json.loads(value)
+            except ValueError:
+                values[key[2:].replace('-', '_')] = value
+
+    async def run() -> dict[str, Any]:
+        client = await discover()
+        if client is None:
+            raise RuntimeError('no running hub; start agent-bridge serve first')
+        return await client.call(tool, **values)
+
+    result = asyncio.run(run())
+    if args[0] == 'ask' and result.get('ok'):
+        print(result.get('result_text', ''))
+    else:
+        print(json.dumps(result, ensure_ascii=False))
+    if not result.get('ok'):
+        raise SystemExit(1)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
@@ -218,6 +274,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
 
     command = args[0]
+    if command in {'serve', 'call', 'ask'}:
+        hub_command(args)
+        return
     if command in {"-h", "--help", "help"}:
         print(HELP, end="")
         return
