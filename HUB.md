@@ -115,4 +115,72 @@ not malicious token holders. Never share tokens. Worker outputs are untrusted.
 Non-loopback bind requires `--allow-remote`; HTTP is not encrypted, so use a
 trusted TLS tunnel and firewall rather than exposing it to the Internet.
 
+## Cloud API workers
+
+Cloud workers run alongside local ACP/CLI workers; they do not need a local CLI
+or `cwd`. Add the commented `cursor-cloud` / `devin-cloud` presets from
+`agents.toml.example` to your user configuration, bind credentials in the **hub
+process environment**, and restart the hub. Keys are read from their named env
+variables at request time, never from `agents.<name>.env`, and are not persisted.
+An availability probe only checks credential/org presence, not entitlement.
+
+```sh
+agent-bridge ask cursor-cloud 'Fix the failing tests' --repo https://github.com/org/repo --ref main --model composer-2 --timeout 3600
+agent-bridge ask devin-cloud 'Implement the feature' --repo https://github.com/org/repo --model fast --timeout 3600
+agent-bridge ask cursor-cloud 'Add tests too' --session-id sess_FROM_RESULT --timeout 3600
+```
+
+Use `call dispatch_task` then `call get_result --task-id ...` for the Bridge
+session ID and structured metadata. REST `POST /v1/tasks`, `POST
+/v1/agents/{agent}/invoke` and MCP `dispatch_task` accept optional `repo` and
+`ref`, overriding config on the first turn. Cloud follow-ups keep their original
+repository/ref; a different explicit repository/ref is rejected. Local workers
+still require an absolute existing cwd and reject repo/ref. `ask` defaults cwd
+to the shell's current directory for compatibility; cloud workers ignore it.
+
+Cursor uses the v1 agents/runs API. `--model` is the Cursor model ID; `--effort`
+has no Cursor mapping. Devin uses the v3 organization sessions API: `--model`
+takes precedence over `--effort`, then config `devin_mode`; `--model` selects a
+Devin mode such as `normal`, `fast`, `lite`, `ultra` or `fusion`, not an upstream
+model. Effort maps `off`→`fast`, `low`→`lite`, `medium`→`normal`, and
+`high`/`max`→`ultra` (higher modes can cost more).
+Devin mode cannot change on a follow-up. Devin's create API has no dedicated
+repository-ref field: Bridge adds the ref as a prompt instruction (not a
+server-enforced checkout guarantee). Cursor sends `startingRef` directly.
+
+Results include a provider-neutral `remote` dictionary with provider IDs, URL,
+status/detail, PR URLs and Cursor branch records; Devin structured output is
+included in text and metadata. Local `files_changed` is unavailable for cloud
+turns: inspect the remote branch/PR instead. Cursor branch metadata is per-agent,
+not a per-turn diff. Cursor token usage is best-effort (early-access usage API
+may return 403); Devin reports cumulative session `acus_consumed`, **not tokens
+or a per-turn ACU delta**. Cloud agents incur provider costs, including Devin ACUs;
+set `max_acu_limit` and monitor the provider's limits.
+
+Cloud defaults: no silence timeout, 24-hour turn timeout, polling every 5 seconds.
+Override `stall_timeout_sec` / `turn_timeout_sec` on the agent and
+`cloud.poll_interval_sec` as needed. Status changes and new messages count as
+progress, unchanged poll responses do not. Cursor follows run terminal statuses;
+unknown nonterminal statuses are tolerated. Devin `waiting_for_user` finishes
+the Bridge turn; `waiting_for_approval` finishes it with a warning. Credit/limit
+details fail the turn.
+
+**Cancellation:** Cursor cancels the current run; ending its Bridge session
+archives the agent. Devin has no per-turn stop: **cancel and end_session both
+terminate the Devin session with archive=false**, making that session
+non-resumable. Normal hub shutdown also shuts down adapters (archives Cursor /
+terminates Devin). After an unclean restart, running Bridge tasks fail with
+`bridge_restarted`; persisted remote IDs/URL remain available to inspect or stop
+the provider job, which may still be running. Bridge does not automatically
+reattach to that in-flight turn.
+
+No hub URL/token/caller environment is sent to cloud providers. Cloud workers
+cannot call back to the default loopback hub; peer-call env injection applies
+only to local workers. `base_url` is a trusted configuration setting: point it
+only at the provider or a trusted gateway (local HTTP is useful for tests).
+Use HTTPS for real credentials. Never put API keys in URLs, prompts or config.
+
+API references: [Cursor v1](https://cursor.com/docs/cloud-agent/api/endpoints),
+[Devin v3](https://docs.devin.ai/api-reference/v3/sessions/post-organizations-sessions).
+
 [中文](HUB.zh-CN.md)

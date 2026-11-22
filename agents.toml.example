@@ -122,6 +122,37 @@ max_depth = 3
 # [env.set]
 # MINIMAX_DATA_DIR = "D:/minimax"
 
+# Cloud API workers (uncomment complete blocks; no local command required).
+# Bind keys only in the hub process environment, never in this file.
+# [agents.cursor-cloud]
+# protocol = "cloud"
+# stall_timeout_sec = 0
+# turn_timeout_sec = 86400
+# [agents.cursor-cloud.cloud]
+# provider = "cursor"
+# api_key_env = "CURSOR_API_KEY"
+# base_url = "https://api.cursor.com"
+# repo = "https://github.com/org/repo"
+# ref = "main"
+# auto_create_pr = true
+# model = "composer-2"
+# poll_interval_sec = 5
+#
+# [agents.devin-cloud]
+# protocol = "cloud"
+# [agents.devin-cloud.cloud]
+# provider = "devin"
+# api_key_env = "DEVIN_API_KEY"
+# base_url = "https://api.devin.ai"
+# org_id_env = "DEVIN_ORG_ID"
+# # org_id = "org-your-org" # alternatively set a non-secret org ID here
+# repo = "https://github.com/org/repo"
+# ref = "main" # prompt instruction; Devin has no dedicated checkout-ref field
+# devin_mode = "fast" # --model, then --effort, overrides this on creation
+# max_acu_limit = 5 # cumulative session ACUs, not tokens
+# poll_interval_sec = 5
+# # Cancel/end_session terminates Devin permanently; start a new session afterward.
+
 # DSH: do not put a personal checkout path in the repo agents.toml.
 # Optional overrides live here or in the process environment:
 # DSH_ACP_BIN = "C:/path/to/dsh-acp-demo/lib/bin.js"

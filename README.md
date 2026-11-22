@@ -19,6 +19,13 @@ Run `agent-bridge serve` once; coordinator MCP instances auto-proxy to its share
 Registry. Any shell-capable agent can call peers with `agent-bridge ask` or
 `agent-bridge call`. See [Hub setup, REST API and security](HUB.md).
 
+Cloud workers are also supported: Cursor Cloud (v1) and Devin (v3), configured
+with `protocol = "cloud"`, environment-only API keys, and repository URLs instead
+of a local cwd. See [cloud setup](HUB.md#cloud-api-workers) and the commented
+presets in `agents.toml.example`. Cloud calls incur provider costs; Devin uses
+ACUs, and **cancelling terminates its session permanently**. Cloud workers do not
+inherit local hub peer-call credentials or reach a loopback hub.
+
 Want a headless `cli -p` style worker instead of ACP? Set `protocol = "cli"` in
 the agent's user overlay (OpenCode, Claude and Cursor presets), restart and create
 a new session. Defaults stay unchanged. See [configuration and permission caveats](SETUP.md#optional-headless-cli-workers)
@@ -184,6 +191,11 @@ uv run pytest
 先启动 `agent-bridge serve`，协调器 MCP 会自动代理到共享 Registry。
 任何支持 shell 的 agent 都能用 `agent-bridge ask` / `call` 调用同伴。
 参见 [Hub 配置与安全说明](HUB.zh-CN.md)。
+
+也支持 Cursor Cloud v1 / Devin v3 云端 API worker：`protocol = "cloud"`，
+密钥仅从环境读取，使用仓库 URL 而非本地 cwd。配置示例见 `agents.toml.example`，
+用法见 [云端说明](HUB.zh-CN.md#云端-api-worker)。云端调用会产生费用，Devin 使用 ACU，
+**取消会永久终止 Devin session**。云端不继承本地同伴调用凭证，也无法访问 loopback Hub。
 
 如需无头 `cli -p` 风格 worker，可在用户配置的对应 agent 下设置 `protocol = "cli"`
 （OpenCode、Claude、Cursor 预设），重启并新建 session；默认仍使用原协议。

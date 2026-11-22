@@ -627,6 +627,21 @@ Auth is `mcode login` under `~/.minimax` (`auth/<build>/<region>/auth.json`), or
 
 `dispatch_task.model` is `provider/model` or `provider/model#variant`, the same shape as `mcode exec --model`. Bridge encodes that into the ACP value the session actually advertises. An unknown slug fails the turn and lists the real `provider/model` options. `effort` maps onto that model's `thinkingEffort` (`default|low|medium|high|xhigh|max` is common; Bridge `off` → `default`). A model with no effort option, or an effort that will not map, comes back as a warning. `get_result.observed_model` / `observed_effort` are the last values Bridge successfully set after that mapping. Switching model on a live session re-applies effort. Bridge forces `permissionMode=bypassPermissions` after `session/new` (a fresh process starts in `default`, which asks). That option is not the session mode — `session/set_mode` is only `default` / `plan`, and Bridge leaves it on `default`. Revive uses `session/resume`: `session/load` replays the whole history.
 
+## Cloud API workers
+
+Use `protocol = "cloud"` with `[agents.NAME.cloud] provider = "cursor"` or
+`"devin"`; no `command` is required. Commented complete presets are in
+`agents.toml.example`. Bind `CURSOR_API_KEY` or `DEVIN_API_KEY` in the Bridge
+process environment; Devin also requires `org_id` or `DEVIN_ORG_ID`.
+Never put a key in config or a URL. No network request is made by the probe.
+
+See [cloud setup and lifecycle](HUB.md#cloud-api-workers) for optional repo/ref,
+model/mode mapping, remote results, polling and cost controls. Cloud workers do
+not write to local cwd or inherit peer-call environment. Devin consumes ACUs;
+`max_acu_limit` can bound a session. **Cancel terminates Devin and prevents
+resume**; Cursor cancels a run and archives on end_session. Defaults are a
+disabled stall timeout and a 24-hour turn timeout, both configurable per agent.
+
 ## Permissions
 
 Most worker CLIs run in always-approve / skip-permissions mode. Codex CLI defaults to `--approve-for-me` (auto review + workspace-write); `--yolo` is opt-in via `[agents.codex] session_meta = { yolo = true }`. Review is the coordinator's job: `git diff`, build, tests. Cap follow-up turns at three, then the coordinator patches the rest.
