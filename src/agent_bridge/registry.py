@@ -17,6 +17,7 @@ import psutil
 from agent_bridge.adapters import build_adapter
 from agent_bridge.adapters.acp import AcpError
 from agent_bridge.adapters.base import Adapter
+from agent_bridge.adapters.cloud import CloudAdapter
 from agent_bridge.config import (
     COORDINATOR_MODE_HINTS,
     AgentConfig,
@@ -586,6 +587,8 @@ class Registry:
         if existing is not None:
             return existing
         adapter = build_adapter(self.config.get(session.agent), self.home, self.config.env)
+        if isinstance(adapter, CloudAdapter):
+            adapter.on_progress = self.save
         self._adapters[session.session_id] = adapter
         return adapter
 
@@ -605,6 +608,8 @@ class Registry:
 
     async def _quota_for(self, cfg: AgentConfig, *, available: bool) -> dict:
         """The ``quota`` block for one ``list_agents`` row. Never raises, never gates ``available``."""
+        if cfg.protocol == 'cloud':
+            return unknown_quota('cloud usage is reported per task; no quota probe').model_dump(mode='json')
         quota_cfg = self.config.quota
         if not quota_cfg.enabled:
             return unknown_quota("quota lookup is disabled ([quota] enabled = false)").model_dump(mode="json")
@@ -696,13 +701,15 @@ class Registry:
         self,
         agent: str,
         message: str,
-        cwd: str,
+        cwd: str | None = None,
         session_id: str | None = None,
         model: str | None = None,
         effort: str | None = None,
         title: str | None = None,
         user_requested: bool = False,
         request_id: str | None = None,
+        repo: str | None = None,
+        ref: str | None = None,
     ) -> dict:
         if not self.dispatch_enabled:
             raise RuntimeError(NESTED_DISPATCH_ERROR)
@@ -717,17 +724,25 @@ class Registry:
                 request_id = str(uuid.UUID(request_id))
             except ValueError:
                 raise ValueError("request_id must be a UUID") from None
-        cwd_path = Path(cwd)
-        if not cwd_path.is_absolute():
+        agent_cfg = self.config.get(agent)
+        cloud = agent_cfg.protocol == 'cloud'
+        if not cloud and not cwd:
+            raise ValueError('cwd is required for local agents')
+        cwd_path = Path(cwd or '.')
+        if not cloud and not cwd_path.is_absolute():
             raise ValueError("cwd must be an absolute path")
-        if not cwd_path.exists():
+        if not cloud and not cwd_path.exists():
             raise ValueError(f"cwd does not exist: {cwd_path}")
-        if not cwd_path.is_dir():
+        if not cloud and not cwd_path.is_dir():
             raise ValueError(f"cwd is not a directory: {cwd_path}")
-        effort = normalize_effort(effort)
-        self.config.get(agent)
+        effort = effort if cloud else normalize_effort(effort)
+        resolved_cwd = '' if cloud else str(cwd_path.resolve())
+        if not cloud and (repo is not None or ref is not None):
+            raise ValueError('repo and ref are only supported by cloud agents')
         # Compare supplied arguments, not selections inherited from a mutable session.
-        request = (agent, message, str(cwd_path.resolve()), session_id, model, effort, title, user_requested)
+        request: tuple = (agent, message, resolved_cwd, session_id, model, effort, title, user_requested)
+        if cloud:
+            request += (repo, ref)
         async with self._lock:
             if request_id is not None and request_id in self._requests:
                 previous_fp, task_id = self._requests[request_id]
@@ -750,7 +765,13 @@ class Registry:
                     raise KeyError(f"unknown session {session_id}")
                 if session.agent != agent:
                     raise ValueError(f"session {session_id} belongs to agent {session.agent}, not {agent}")
-                if Path(session.cwd).resolve() != cwd_path.resolve():
+                if cloud and repo is not None and repo != session.repo:
+                    raise ValueError('follow-up repo must be the same repository')
+                if cloud and ref is not None and ref != session.ref:
+                    raise ValueError('follow-up ref must be the same repository ref')
+                if cloud and (session.remote.get('resumable') is False or session.proc_state == ProcState.dead):
+                    raise ValueError('cloud session was terminated and cannot be resumed')
+                if not cloud and Path(session.cwd).resolve() != cwd_path.resolve():
                     raise ValueError(
                         f"session {session.session_id} is bound to {session.cwd}; "
                         "follow-up cwd must be the same project folder"
@@ -764,7 +785,9 @@ class Registry:
                 session = Session(
                     session_id=_new_id("sess"),
                     agent=agent,
-                    cwd=str(cwd_path.resolve()),
+                    cwd=resolved_cwd,
+                    repo=repo if repo is not None else (agent_cfg.cloud.repo if agent_cfg.cloud else None),
+                    ref=ref if ref is not None else (agent_cfg.cloud.ref if agent_cfg.cloud else None),
                     model=model,
                     effort=effort,
                     title=title,
@@ -779,7 +802,7 @@ class Registry:
             if title:
                 session.title = title
             if session_id is None:
-                session.cwd = str(cwd_path.resolve())
+                session.cwd = resolved_cwd
             session.last_active_at = iso()
             task = Task(
                 task_id=_new_id("task"),
@@ -787,6 +810,10 @@ class Registry:
                 agent=agent,
                 message=message,
                 cwd=session.cwd,
+                repo=session.repo,
+                ref=session.ref,
+                remote={key: value for key, value in session.remote.items()
+                        if key in {'provider', 'url', 'agent_id', 'session_id', 'devin_mode', 'resumable'}},
                 model=model or session.model,
                 effort=effort or session.effort,
                 status=TaskStatus.queued,
@@ -842,7 +869,8 @@ class Registry:
         before: dict[str, tuple[int, int]] | None = None
         try:
             mark_worker_activity(session.session_id, self.home)
-            before = await asyncio.to_thread(snapshot_workspace, task.cwd)
+            if self.config.get(session.agent).protocol != 'cloud':
+                before = await asyncio.to_thread(snapshot_workspace, task.cwd)
             agent_cfg = self.config.get(session.agent)
             limit = agent_cfg.stall_timeout_sec
             turn_cap = agent_cfg.turn_timeout_sec
@@ -855,6 +883,7 @@ class Registry:
                 else None
             )
             result = await adapter.run_turn(session, task)
+            task.remote.update(result.remote)
             if result.native_session_id:
                 session.native_session_id = result.native_session_id
             task.result_chars = len(result.text)
@@ -870,16 +899,17 @@ class Registry:
                     f"full result persistence failed: {type(exc).__name__}: {exc}"
                 )
                 log.exception("could not persist full result for task %s", task.task_id)
-            inside_changed, outside_changed = await asyncio.to_thread(
-                merge_files_changed, task.cwd, result.files_changed, before
-            )
-            self._set_files_changed(task, inside_changed, outside_changed)
+            if before is not None:
+                inside_changed, outside_changed = await asyncio.to_thread(
+                    merge_files_changed, task.cwd, result.files_changed, before
+                )
+                self._set_files_changed(task, inside_changed, outside_changed)
             task.usage = result.usage
-            if session.agent == "grok":
+            if session.agent == "grok" and agent_cfg.protocol != 'cloud':
                 observed = await asyncio.to_thread(observe_grok_session, session.cwd, session.native_session_id)
                 task.observed_model = observed["model"]
                 task.observed_effort = observed["effort"]
-            elif session.agent == "kimi":
+            elif session.agent == "kimi" and agent_cfg.protocol != 'cloud':
                 observed = await asyncio.to_thread(observe_kimi_session, session.native_session_id)
                 task.observed_model = observed["model"]
                 task.observed_effort = observed["effort"]
@@ -1329,6 +1359,9 @@ class Registry:
             "error": task.error,
             "failure": task.failure.model_dump(mode="json") if task.failure else None,
             "warnings": task.warnings,
+            "remote": task.remote,
+            "repo": task.repo,
+            "ref": task.ref,
             "files_changed": task.files_changed,
             "files_changed_total": task.files_changed_total,
             "files_changed_truncated": task.files_changed_truncated,
@@ -1515,6 +1548,9 @@ class Registry:
                     "session_id": session.session_id,
                     "agent": session.agent,
                     "cwd": session.cwd,
+                    "repo": session.repo,
+                    "ref": session.ref,
+                    "remote": session.remote,
                     "native_session_id": session.native_session_id,
                     "proc_state": session.proc_state.value,
                     "turns": session.turns,
@@ -1542,6 +1578,8 @@ class Registry:
         if busy is not None:
             await self.cancel_task(busy.task_id)
         adapter = self._adapters.pop(session_id, None)
+        if adapter is None and self.config.get(session.agent).protocol == 'cloud':
+            adapter = build_adapter(self.config.get(session.agent), self.home, self.config.env)
         if adapter is not None:
             await adapter.shutdown(session)
         self._cancel_idle(session_id)

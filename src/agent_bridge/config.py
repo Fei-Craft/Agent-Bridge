@@ -6,8 +6,9 @@ import re
 import tomllib
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from agent_bridge.paths import bridge_home, bundled_agents_toml
 from agent_bridge.persist import atomic_write_text
@@ -116,10 +117,36 @@ class CliConfig(BaseModel):
     parser: Literal['text', 'jsonl', 'claude', 'opencode', 'cursor'] = 'text'
 
 
+class CloudConfig(BaseModel):
+    provider: Literal['cursor', 'devin']
+    api_key_env: str = ''
+    base_url: str = ''
+    org_id: str | None = None
+    org_id_env: str = 'DEVIN_ORG_ID'
+    repo: str | None = None
+    ref: str | None = None
+    auto_create_pr: bool = False
+    model: str | None = None
+    devin_mode: str | None = None
+    max_acu_limit: int | None = Field(default=None, gt=0)
+    poll_interval_sec: float = Field(default=5, gt=0)
+
+    @model_validator(mode='after')
+    def defaults(self) -> CloudConfig:
+        self.api_key_env = self.api_key_env or f'{self.provider.upper()}_API_KEY'
+        self.base_url = (self.base_url or {'cursor': 'https://api.cursor.com',
+                                         'devin': 'https://api.devin.ai'}[self.provider]).rstrip('/')
+        url = urlsplit(self.base_url)
+        if url.scheme not in {'http', 'https'} or not url.hostname or url.username or url.password or url.query or url.fragment:
+            raise ValueError('cloud base_url must be HTTP(S), without credentials, query or fragment')
+        return self
+
+
 class AgentConfig(BaseModel):
     name: str
     protocol: str
-    command: list[str]
+    command: list[str] = Field(default_factory=list)
+    cloud: CloudConfig | None = None
     cli: CliConfig = Field(default_factory=CliConfig)
     fallback_commands: list[list[str]] = Field(default_factory=list)
     cwd: str | None = None
@@ -142,6 +169,19 @@ class AgentConfig(BaseModel):
     # key=value). No key validation, no filtering, user config.toml is
     # never read.
     config_overrides: list[str] = Field(default_factory=list)
+
+    @model_validator(mode='after')
+    def validate_protocol(self) -> AgentConfig:
+        if self.protocol == 'cloud':
+            if self.cloud is None:
+                raise ValueError('cloud protocol requires a cloud configuration')
+            if 'stall_timeout_sec' not in self.model_fields_set:
+                self.stall_timeout_sec = 0
+            if 'turn_timeout_sec' not in self.model_fields_set:
+                self.turn_timeout_sec = 86400
+        elif not self.command:
+            raise ValueError('command is required for local agents')
+        return self
 
 
 class EnvConfig(BaseModel):
@@ -267,7 +307,7 @@ def _merge_agent_spec(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str
     for key, value in overlay.items():
         if value in (None, [], {}):
             continue
-        if key in {"env", "cli"} and isinstance(out.get(key), dict) and isinstance(value, dict):
+        if key in {"env", "cli", "cloud"} and isinstance(out.get(key), dict) and isinstance(value, dict):
             out[key] = {**out[key], **value}
         else:
             out[key] = value

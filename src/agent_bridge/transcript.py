@@ -61,6 +61,7 @@ def _pending_text(path: Path) -> str:
 # is written by Bridge itself and never proves the worker is alive.
 WORKER_ACTIVITY_TYPES = frozenset(
     {
+        "cloud_status",
         "message_chunk",
         "thought_chunk",
         "tool_call",

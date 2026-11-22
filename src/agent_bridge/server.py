@@ -42,6 +42,9 @@ async def lifespan(_server: MCPServer[Registry | HubClient]) -> AsyncIterator[Re
 # Injected into the coordinator's context at the MCP handshake — the one
 # channel that needs no copied rules file and no skill install.
 INSTRUCTIONS = (
+    "Cloud workers (protocol=cloud) use remote repositories: cwd is optional, repo/ref may override config. "
+    "Follow-ups keep their repo/ref. Read remote result metadata for URLs/PRs. Cancelling Devin cloud "
+    "terminates its session permanently; cloud workers cannot call a loopback hub.\n"
     "Agent Bridge dispatches tasks to local worker CLIs (Grok, Kimi Code, "
     "Antigravity, DeepSeek Harness, OpenCode, Claude Code, Codex CLI, Devin CLI, "
     "Cursor, ZCode, MiniMax Code) and keeps their "
@@ -112,16 +115,18 @@ async def dispatch_task(
     ctx: Context,
     agent: str,
     message: str,
-    cwd: str,
+    cwd: str | None = None,
     session_id: str | None = None,
     model: str | None = None,
     effort: str | None = None,
     title: str | None = None,
     user_requested: bool = False,
     request_id: str | None = None,
+    repo: str | None = None,
+    ref: str | None = None,
 ) -> dict[str, Any]:
-    """Start a worker turn. cwd is this coordinator conversation's project (absolute). model/effort are optional coordinator choices (agy: --model/--effort/--project (existing project for cwd, else --new-project); grok: session/setModel after /new; kimi/cursor/opencode/claude/devin/zcode/minimax: session/set_config_option after new/resume, devin has no effort; dsh: legacy demo spawn env + respawn on change, native --profile acp session/set_config_option; codex: exec -m / -c model_reasoning_effort, off->none). Pass session_id to continue. Set user_requested=true only when the user explicitly asked for a worker (required in manual mode). Rejected when coordinator.dispatch_enabled is false, even with user_requested=true. For optional retry deduplication, supply a UUID request_id on the first call and replay the same ID and original arguments on retries; keep session_id omitted if it was originally omitted. Adding an ID only on retry cannot deduplicate the first call. Identical retries reuse the task in this Bridge instance while it is retained; different arguments are rejected. Normal dispatch validation still applies. Bindings are lost on restart and are not shared with other instances. Returns immediately."""
-    return await _service(ctx).dispatch_task(agent=agent, message=message, cwd=cwd, session_id=session_id, model=model, effort=effort, title=title, user_requested=user_requested, request_id=request_id)
+    """Start a worker turn. Local workers require an absolute existing cwd. Cloud workers ignore cwd and accept optional repo/ref overrides; follow-ups keep their repository/ref. Cloud Cursor model is a model ID; Devin model is a mode, or effort maps off/low/medium/high/max to fast/lite/normal/ultra/ultra. Remote results carry provider IDs, URLs and PRs rather than local file changes. Cancelling Devin terminates the remote session permanently. Local model/effort behavior is unchanged. Pass session_id to continue. Set user_requested=true only when the user explicitly asked for a worker (required in manual mode). Rejected when coordinator.dispatch_enabled is false. For retry deduplication, supply a UUID request_id on the first call and replay the same ID and original arguments; identical retries reuse the task, different arguments are rejected. Bindings are lost on restart and are not shared with other instances. Returns immediately."""
+    return await _service(ctx).dispatch_task(agent=agent, message=message, cwd=cwd, session_id=session_id, model=model, effort=effort, title=title, user_requested=user_requested, request_id=request_id, repo=repo, ref=ref)
 
 
 @mcp.tool(annotations=READ_ONLY)

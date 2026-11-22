@@ -43,7 +43,7 @@ Usage:
   agent-bridge help            this text
   agent-bridge serve [--host HOST] [--port PORT] [--allow-remote]
   agent-bridge call TOOL [--key value ...]   call a running hub (JSON output)
-  agent-bridge ask AGENT MESSAGE [--cwd DIR] [--timeout SEC] [--model MODEL] [--effort EFFORT]
+  agent-bridge ask AGENT MESSAGE [--cwd DIR] [--repo URL] [--ref REF] [--session-id ID] [--timeout SEC] [--model MODEL] [--effort EFFORT]
 
 Install:
   uv tool install {GIT_SOURCE}
@@ -231,6 +231,9 @@ def hub_command(args: list[str]) -> None:
         parser.add_argument('--timeout', type=float, default=180)
         parser.add_argument('--model', default=argparse.SUPPRESS, help='model ID to pass to the worker')
         parser.add_argument('--effort', default=argparse.SUPPRESS, help='reasoning effort to pass to the worker')
+        parser.add_argument('--repo', default=argparse.SUPPRESS, help='cloud repository URL')
+        parser.add_argument('--ref', default=argparse.SUPPRESS, help='cloud repository starting ref')
+        parser.add_argument('--session-id', default=argparse.SUPPRESS, help='continue a Bridge session')
         options = parser.parse_args(args[1:])
         tool, values = 'invoke', vars(options)
         values['timeout_sec'] = values.pop('timeout')

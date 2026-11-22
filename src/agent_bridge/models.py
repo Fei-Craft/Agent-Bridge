@@ -93,6 +93,9 @@ class Session(BaseModel):
     session_id: str
     agent: str
     cwd: str
+    repo: str | None = None
+    ref: str | None = None
+    remote: dict[str, Any] = Field(default_factory=dict)
     native_session_id: str | None = None
     proc_state: ProcState = ProcState.idle_unloaded
     model: str | None = None
@@ -122,6 +125,9 @@ class Task(BaseModel):
     agent: str
     message: str
     cwd: str
+    repo: str | None = None
+    ref: str | None = None
+    remote: dict[str, Any] = Field(default_factory=dict)
     model: str | None = None
     effort: str | None = None
     observed_model: str | None = None
@@ -156,6 +162,7 @@ class TranscriptEvent(BaseModel):
 
 
 class TurnResult(BaseModel):
+    remote: dict[str, Any] = Field(default_factory=dict)
     text: str = ""
     files_changed: list[str] = Field(default_factory=list)
     stop_reason: str = "end_turn"

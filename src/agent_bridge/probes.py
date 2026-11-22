@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -116,6 +117,16 @@ def _kimi_auth(env: dict[str, str]) -> str:
 
 
 async def probe_agent(cfg: AgentConfig, env_config: EnvConfig | None = None) -> dict:
+    if cfg.protocol == 'cloud':
+        cloud = cfg.cloud
+        assert cloud is not None
+        missing = []
+        if not os.environ.get(cloud.api_key_env):
+            missing.append(cloud.api_key_env)
+        if cloud.provider == 'devin' and not (cloud.org_id or os.environ.get(cloud.org_id_env)):
+            missing.append(cloud.org_id_env)
+        return {'agent': cfg.name, 'available': not missing, 'version': None,
+                'detail': 'missing ' + ', '.join(missing) if missing else f'cloud {cloud.provider}; credentials present (not verified)'}
     if cfg.protocol == "fake":
         return {"agent": cfg.name, "available": True, "version": "fake", "detail": "in-process fake adapter"}
     resolved = build_worker_env(

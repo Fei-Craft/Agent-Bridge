@@ -4,12 +4,15 @@ from agent_bridge.adapters.acp import AcpAdapter
 from agent_bridge.adapters.antigravity import AgyAdapter
 from agent_bridge.adapters.base import Adapter
 from agent_bridge.adapters.cli import CliAdapter
+from agent_bridge.adapters.cloud import CloudAdapter
 from agent_bridge.adapters.codex import CodexAdapter
 from agent_bridge.adapters.fake import FakeAdapter
 from agent_bridge.config import AgentConfig, EnvConfig
 
 
 def build_adapter(cfg: AgentConfig, home: Path, env_config: EnvConfig | None = None) -> Adapter:
+    if cfg.protocol == 'cloud':
+        return CloudAdapter(cfg, home, env_config)
     if cfg.protocol == 'cli':
         return CliAdapter(cfg, home, env_config)
     if cfg.protocol == "fake":
