@@ -36,6 +36,7 @@ class CloudAdapter(Adapter):
     resident = False
     on_progress: Callable[[], None] | None = None
     _task: Task | None = None
+    _cancel_requested = False
 
     def can_revive(self) -> bool:
         return True
@@ -85,6 +86,7 @@ class CloudAdapter(Adapter):
     async def run_turn(self, session: Session, task: Task) -> TurnResult:
         await self.ensure_session(session)
         self._task = task
+        self._cancel_requested = False
         try:
             if self.cfg.provider == 'cursor':
                 return await self._cursor(session, task)
@@ -111,7 +113,8 @@ class CloudAdapter(Adapter):
             self._record(session, task, provider='devin', session_id=session.native_session_id,
                          url=data.get('url'))
         if cancelled:
-            await self.cancel(session)
+            if self._cancel_requested:
+                await self.cancel(session)
             raise asyncio.CancelledError
         return data
 
@@ -253,6 +256,7 @@ class CloudAdapter(Adapter):
         )
 
     async def cancel(self, session: Session) -> None:
+        self._cancel_requested = True
         if not session.native_session_id:
             return
         if self.cfg.provider == 'cursor':
@@ -278,6 +282,9 @@ class CloudAdapter(Adapter):
                 self.on_progress()
 
     async def shutdown(self, session: Session) -> None:
+        pass
+
+    async def end_session(self, session: Session) -> None:
         if self.cfg.provider == 'cursor' and session.native_session_id:
             await self._request('POST', f'/v1/agents/{quote(session.native_session_id, safe="")}/archive')
         elif self.cfg.provider == 'devin':

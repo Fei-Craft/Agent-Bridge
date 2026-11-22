@@ -168,8 +168,10 @@ details fail the turn.
 **Cancellation:** Cursor cancels the current run; ending its Bridge session
 archives the agent. Devin has no per-turn stop: **cancel and end_session both
 terminate the Devin session with archive=false**, making that session
-non-resumable. Normal hub shutdown also shuts down adapters (archives Cursor /
-terminates Devin). After an unclean restart, running Bridge tasks fail with
+non-resumable. Hub/Registry shutdown and idle unload only detach locally: they
+never archive Cursor agents, cancel remote runs, or terminate Devin sessions.
+Remote work and provider billing may continue after the hub stops; use explicit
+`end_session` or cancellation to stop it. After an unclean restart, running Bridge tasks fail with
 `bridge_restarted`; persisted remote IDs/URL remain available to inspect or stop
 the provider job, which may still be running. Bridge does not automatically
 reattach to that in-flight turn.

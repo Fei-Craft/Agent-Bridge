@@ -57,8 +57,9 @@ session ACU，不是 token 或本轮增量。**云端调用会产生费用，Dev
 完成并警告，额度/信用限制判失败。
 
 **取消 Devin 会 terminate（archive=false），不可续接，需新建 session。**
-Cursor 取消当前 run，end_session 则 archive agent。正常 Hub 关闭也会 archive Cursor /
-terminate Devin。非正常重启仍报告 bridge_restarted，但保留 remote ID/URL，
+Cursor 取消当前 run，end_session 则 archive agent。Hub/Registry 关闭和空闲卸载只断开本地连接，
+不会 archive Cursor、取消远程 run 或 terminate Devin；远程工作和计费可能继续。
+需要停止时请显式 end_session 或取消。非正常重启仍报告 bridge_restarted，但保留 remote ID/URL，
 云端任务可能仍在运行，需人工检查/停止；不会自动重新接管。
 不向云端发送 Hub URL/token/caller 环境，云端无法回调默认 loopback Hub。
 base_url 仅用于可信提供商/网关，真实密钥应走 HTTPS。

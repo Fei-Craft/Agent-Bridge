@@ -235,6 +235,61 @@ async def test_cancel_remote(cloud_registry, provider, name, monkeypatch):
         assert any(path.endswith('/cancel') for _, path, _ in provider[1].requests)
 
 
+@pytest.mark.parametrize('name', ['cursor', 'devin'])
+@pytest.mark.parametrize('phase', ['completed', 'running', 'creating'])
+async def test_shutdown_preserves_remote(cloud_registry, provider, name, phase, monkeypatch):
+    ready = progress_event(monkeypatch, lambda task: task.remote.get('status'))
+    release = asyncio.Event()
+    created = asyncio.Event()
+    original = CloudAdapter._request
+
+    async def request(adapter, method, path, body=None):
+        data = await original(adapter, method, path, body)
+        if phase == 'creating' and method == 'POST':
+            created.set()
+            await release.wait()
+        return data
+
+    monkeypatch.setattr(CloudAdapter, '_request', request)
+    if phase != 'completed':
+        provider[1].cursor_status = 'RUNNING'
+        provider[1].detail = 'working'
+    dispatched = await cloud_registry.dispatch_task(name, 'keep remote alive')
+    task = cloud_registry.tasks[dispatched['task_id']]
+    if phase == 'completed':
+        await cloud_registry.wait_task(task.task_id, timeout_sec=5)
+    else:
+        await asyncio.wait_for((created if phase == 'creating' else ready).wait(), timeout=5)
+    stopping = asyncio.create_task(cloud_registry.stop())
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(stopping, timeout=5)
+    assert task.remote['url']
+    assert not any(method == 'DELETE' or path.endswith(('/archive', '/cancel'))
+                   for method, path, _ in provider[1].requests)
+    assert cloud_registry.sessions[task.session_id].remote.get('resumable') is not False
+
+
+@pytest.mark.parametrize('name', ['cursor', 'devin'])
+async def test_idle_shutdown_preserves_remote_and_explicit_end(cloud_registry, provider, name):
+    first = await turn(cloud_registry, name)
+    sid = first['session_id']
+    adapter = cloud_registry._adapters[sid]
+    session = cloud_registry.sessions[sid]
+    cloud_registry.config.agents[name].idle_unload_sec = 1
+    cloud_registry._schedule_idle(sid)
+    assert sid not in cloud_registry._idle
+    requests = len(provider[1].requests)
+    await adapter.shutdown(session)
+    assert len(provider[1].requests) == requests
+    second = await turn(cloud_registry, name, session_id=sid)
+    assert second['status'] == 'completed'
+    cloud_registry._adapters.pop(sid)
+    await cloud_registry.end_session(sid)
+    assert any(path.endswith('/archive') if name == 'cursor' else method == 'DELETE'
+               for method, path, _ in provider[1].requests)
+
+
 async def test_secrets_redacted(cloud_registry, provider, bridge_home, monkeypatch, caplog):
     for name in ('cursor', 'devin'):
         secret = f'fake-secret-{name}-unique'

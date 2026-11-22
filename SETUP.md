@@ -641,6 +641,8 @@ not write to local cwd or inherit peer-call environment. Devin consumes ACUs;
 `max_acu_limit` can bound a session. **Cancel terminates Devin and prevents
 resume**; Cursor cancels a run and archives on end_session. Defaults are a
 disabled stall timeout and a 24-hour turn timeout, both configurable per agent.
+Hub/Registry shutdown and idle unload only detach locally, leaving remote work
+and billing intact. Explicitly cancel or end_session to stop cloud work.
 
 ## Permissions
 

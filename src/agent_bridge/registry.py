@@ -1581,7 +1581,10 @@ class Registry:
         if adapter is None and self.config.get(session.agent).protocol == 'cloud':
             adapter = build_adapter(self.config.get(session.agent), self.home, self.config.env)
         if adapter is not None:
-            await adapter.shutdown(session)
+            if isinstance(adapter, CloudAdapter):
+                await adapter.end_session(session)
+            else:
+                await adapter.shutdown(session)
         self._cancel_idle(session_id)
         forget_worker_activity(session_id, self.home)
         session.proc_state = ProcState.dead

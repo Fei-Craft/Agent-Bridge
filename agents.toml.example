@@ -152,6 +152,7 @@ max_depth = 3
 # max_acu_limit = 5 # cumulative session ACUs, not tokens
 # poll_interval_sec = 5
 # # Cancel/end_session terminates Devin permanently; start a new session afterward.
+# # Hub shutdown/idle unload leave cloud work running and provider billing active.
 
 # DSH: do not put a personal checkout path in the repo agents.toml.
 # Optional overrides live here or in the process environment:

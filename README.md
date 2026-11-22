@@ -25,6 +25,8 @@ of a local cwd. See [cloud setup](HUB.md#cloud-api-workers) and the commented
 presets in `agents.toml.example`. Cloud calls incur provider costs; Devin uses
 ACUs, and **cancelling terminates its session permanently**. Cloud workers do not
 inherit local hub peer-call credentials or reach a loopback hub.
+Hub shutdown and idle unload leave cloud agents running; remote billing may
+continue until you explicitly cancel or end the session.
 
 Want a headless `cli -p` style worker instead of ACP? Set `protocol = "cli"` in
 the agent's user overlay (OpenCode, Claude and Cursor presets), restart and create
@@ -196,6 +198,7 @@ uv run pytest
 密钥仅从环境读取，使用仓库 URL 而非本地 cwd。配置示例见 `agents.toml.example`，
 用法见 [云端说明](HUB.zh-CN.md#云端-api-worker)。云端调用会产生费用，Devin 使用 ACU，
 **取消会永久终止 Devin session**。云端不继承本地同伴调用凭证，也无法访问 loopback Hub。
+Hub 关闭或空闲卸载不会停止云端 agent；远程计费可能继续，请显式取消或结束 session。
 
 如需无头 `cli -p` 风格 worker，可在用户配置的对应 agent 下设置 `protocol = "cli"`
 （OpenCode、Claude、Cursor 预设），重启并新建 session；默认仍使用原协议。
