@@ -24,8 +24,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Fei2411/Agent-Bridge"
-Repository = "https://github.com/Fei2411/Agent-Bridge"
+Homepage = "https://github.com/Fei-Craft/Agent-Bridge"
+Repository = "https://github.com/Fei-Craft/Agent-Bridge"
 
 [project.scripts]
 agent-bridge = "agent_bridge.server:main"
