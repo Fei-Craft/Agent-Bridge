@@ -91,6 +91,11 @@ test('empty gateway, approvals, audit and task list have quiet designed states',
   assert.equal(run('delivery({})'), '');
   assert.equal(run("delivery({caller_delivery:{status:'delivered'}})"), '通知 · 已送达');
 });
+test('unresolvable workspaces are explicitly unavailable in the gateway', () => {
+  const {run, get} = setup();
+  run(`snapshot.remote={enabled:false,require_approval:false,agents:[],workspaces:{loop:null}}; renderGateway();`);
+  assert.match(get('gateway-status').textContent, /loop→路径不可用（无法解析）/);
+});
 test('API errors remain visible and expired authentication stops refresh', async () => {
   const {run, get, context} = setup();
   context.fetch = async () => ({ok: false, status: 401, json: async () => ({ok:false,error:'登录已过期'})});

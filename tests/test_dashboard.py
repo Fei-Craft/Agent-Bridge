@@ -167,6 +167,25 @@ async def test_dashboard_workspace_paths_are_canonical(dashboard, tmp_path, monk
     assert registry.tasks[response.json()['task_id']].cwd == str(project.resolve())
 
 
+@pytest.mark.parametrize('error', [OSError('loop'), RuntimeError('symlink loop')])
+async def test_unresolvable_workspace_does_not_break_dashboard(dashboard, tmp_path, monkeypatch, error):
+    client, _, registry = dashboard
+    broken = tmp_path / 'loop'
+    registry.config.hub.remote.remote_workspaces = {'broken': str(broken), 'good': str(tmp_path)}
+    original = Path.resolve
+
+    def resolve(path, *args, **kwargs):
+        if path == broken:
+            raise error
+        return original(path, *args, **kwargs)
+
+    await login(client)
+    monkeypatch.setattr(Path, 'resolve', resolve)
+    response = await client.get('/ui/data', headers=UI)
+    assert response.status_code == 200
+    assert response.json()['remote']['workspaces'] == {'broken': None, 'good': str(tmp_path.resolve())}
+
+
 @pytest.mark.parametrize('route', ['/v1/tasks', '/v1/agents/fake/invoke'])
 async def test_explicit_dashboard_dispatch_in_manual_mode(dashboard, tmp_path, route):
     client, _, registry = dashboard
