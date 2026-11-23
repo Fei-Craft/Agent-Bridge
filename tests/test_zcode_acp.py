@@ -8,10 +8,39 @@ from agent_bridge.adapters.acp import AcpAdapter, _Live
 from agent_bridge.config import AgentConfig, load_config
 from agent_bridge.models import Session
 from agent_bridge.probes import probe_agent
+from agent_bridge.registry import Registry
 from agent_bridge.zcode_meta import ZCODE_MODE_YOLO
 
 GLM = r"builtin:bigmodel-coding-plan\GLM-5.3"
 GLM_TURBO = r"builtin:bigmodel-coding-plan\GLM-5-Turbo"
+
+
+async def test_zcode_model_id_survives_saved_state(bridge_home, tmp_path):
+    registry = Registry.create(bridge_home)
+    await registry.start()
+    try:
+        result = await registry.dispatch_task('fake', 'work', cwd=str(tmp_path), model=GLM)
+        await registry.wait_task(result['task_id'], timeout_sec=5)
+    finally:
+        await registry.stop()
+    restored = Registry.create(bridge_home)
+    await restored.start()
+    try:
+        assert restored.tasks[result['task_id']].model == GLM
+        assert restored.sessions[result['session_id']].model == GLM
+    finally:
+        await restored.stop()
+
+
+@pytest.mark.parametrize('field', ['model', 'effort'])
+def test_zcode_leading_backslash_and_effort_rejected(field):
+    with pytest.raises(ValueError):
+        Session(session_id='test', agent='zcode', cwd='.', **{field: '\\invalid'})
+    if field == 'effort':
+        with pytest.raises(ValueError):
+            Session(session_id='test', agent='zcode', cwd='.', effort=GLM)
+
+
 MODE_OPTION = {
     "id": "mode",
     "currentValue": "build",

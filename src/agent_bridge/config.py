@@ -109,6 +109,10 @@ DEFAULT_INHERIT_KEYS = (
 )
 
 
+def normalize_dsh_permission_mode(value: str) -> str:
+    return value.strip().casefold()
+
+
 class CliConfig(BaseModel):
     command: list[str] = Field(default_factory=list)
     prompt_args: list[str] = Field(default_factory=lambda: ['--', '{prompt}'])
@@ -190,6 +194,7 @@ class AgentConfig(BaseModel):
                   '--dangerously-bypass-approvals-and-sandbox', '--force',
                   '--allow-dangerously-skip-permissions'}
         return (self.protocol == 'agy' or self.session_meta.get('yolo') in (True, 'true', 1)
+                or normalize_dsh_permission_mode(self.env.get('DSH_PERMISSION_MODE', '')) == 'danger-full-access'
                 or any(arg.split('=', 1)[0] in unsafe for arg in argv)
                 or any(value.strip('\"\'') in {'bypassPermissions', 'danger-full-access'}
                        for arg in [*argv, *self.config_overrides] for value in arg.split('=')))

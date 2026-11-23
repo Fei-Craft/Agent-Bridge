@@ -32,6 +32,7 @@ from agent_bridge.worker_env import build_worker_env
 @pytest.fixture
 async def gateway(bridge_home, tmp_path):
     config = load_config(bridge_home)
+    config.agents['dsh'].env['DSH_PERMISSION_MODE'] = 'workspace-write'
     config.hub.remote = RemoteConfig(enabled=True, public_url='http://127.0.0.1:8766',
         require_approval=False,
         remote_callable_agents=['fake', 'cloud', 'dsh'], remote_workspaces={'project': str(tmp_path)})
@@ -112,15 +113,34 @@ def test_remote_unsafe_permissions_require_explicit_opt_in(flag, location, caplo
     assert 'unsafe explicitly allows unsafe permissions' in caplog.text
 
 
+@pytest.mark.parametrize(('value', 'unsafe'), [
+    ('danger-full-access', True), (' danger-full-access ', True), ('\tDaNgEr-FuLl-AcCeSs\n', True),
+    (' workspace-write ', False), ('', False),
+])
+def test_dsh_permissions_normalized_like_worker_launch(value, unsafe):
+    agent = AgentConfig(name='dsh', protocol='acp', command=['worker'], env={'DSH_PERMISSION_MODE': value})
+    launched = build_worker_env(agent.env, base={}, log_fill=False)
+    assert agent.unsafe_remote_permissions() is unsafe
+    assert launched.get('DSH_PERMISSION_MODE', '') == value.strip().casefold()
+    hub = HubConfig(remote={'enabled': True, 'remote_callable_agents': ['dsh']})
+    if unsafe:
+        with pytest.raises(ValueError, match='skips permissions'):
+            AppConfig(agents={'dsh': agent}, hub=hub)
+        agent.remote_allow_unsafe_permissions = True
+    AppConfig(agents={'dsh': agent}, hub=hub)
+
+
 def test_remote_defaults_and_preset_validation(bridge_home):
     assert RemoteConfig().require_approval is True
     config = load_config(bridge_home)
     config.hub.remote = RemoteConfig(enabled=True)
     config.validate_remote_agents()
-    for name in ('opencode', 'claude'):
+    for name in ('opencode', 'claude', 'dsh'):
         config.hub.remote.remote_callable_agents = [name]
         with pytest.raises(ValueError, match='skips permissions'):
             config.validate_remote_agents()
+        config.agents[name].remote_allow_unsafe_permissions = True
+        config.validate_remote_agents()
     bridge_home.mkdir(exist_ok=True)
     (bridge_home / 'agents.toml').write_text('[hub.remote]\nenabled=true\nremote_callable_agents=["claude"]\n', encoding='utf-8')
     with pytest.raises(ValueError, match='skips permissions'):

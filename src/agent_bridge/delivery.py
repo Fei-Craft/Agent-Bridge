@@ -31,10 +31,10 @@ async def validate_callback(url: str | None, secret: str | None, *, allow_insecu
     if secret is not None and len(secret) < 32:
         raise ValueError('callback_secret must contain at least 32 characters')
     if url:
-        await callback_destination(url, allow_insecure=allow_insecure)
+        await callback_destinations(url, allow_insecure=allow_insecure)
 
 
-async def callback_destination(url: str, *, allow_insecure: bool) -> tuple[httpx2.URL, str, str]:
+async def callback_destinations(url: str, *, allow_insecure: bool) -> tuple[list[httpx2.URL], str, str]:
     parsed = urlsplit(url)
     if parsed.scheme not in {'http', 'https'} or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
         raise ValueError('callback_url must be HTTPS, without credentials or fragment')
@@ -60,7 +60,8 @@ async def callback_destination(url: str, *, allow_insecure: bool) -> tuple[httpx
         if ('%' in str(address) or (not loopback_allowed and (parsed.scheme == 'http' or not address.is_global
                 or address.is_multicast or address.is_reserved))):
             raise ValueError('callback_url must resolve only to public addresses (or explicitly allowed loopback)')
-    return original.copy_with(host=str(addresses[0])), original.netloc.decode('ascii'), hostname
+    destinations = [original.copy_with(host=str(address)) for address in dict.fromkeys(addresses)]
+    return destinations, original.netloc.decode('ascii'), hostname
 
 
 def pending(task: Task) -> bool:
@@ -180,10 +181,18 @@ class Deliveries:
                 digest = hmac.new(secret.encode(), f'{timestamp}.{task.task_id}.'.encode() + body, hashlib.sha256).hexdigest()
                 headers['X-Agent-Bridge-Signature'] = f'sha256={digest}'
             async with httpx2.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as client:
-                destination, authority, hostname = await callback_destination(str(task.callback_url),
+                destinations, authority, hostname = await callback_destinations(str(task.callback_url),
                     allow_insecure=registry.config.hub.allow_insecure_callbacks)
                 headers['Host'] = authority
-                response = await client.post(destination, content=body, headers=headers, extensions={'sni_hostname': hostname})
+                response = None
+                for destination in destinations:
+                    try:
+                        response = await client.post(destination, content=body, headers=headers, extensions={'sni_hostname': hostname})
+                    except (httpx2.ConnectError, httpx2.ConnectTimeout):
+                        continue
+                    break
+                if response is None:
+                    raise ValueError('callback connection failed')
             if not 200 <= response.status_code < 300:
                 raise ValueError('callback rejected')
         except (httpx2.HTTPError, ValueError, OSError):

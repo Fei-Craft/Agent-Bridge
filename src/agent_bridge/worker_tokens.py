@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import secrets
 
-from agent_bridge.secrets import remember
+from agent_bridge.secrets import forget, remember
 
 
 class WorkerTokens:
@@ -34,11 +34,16 @@ class WorkerTokens:
         return session_id if session_id in self.active and not self.closed else None
 
     def revoke(self, session_id: str) -> None:
-        self.scopes = {digest: sid for digest, sid in self.scopes.items() if sid != session_id}
+        for digest, sid in list(self.scopes.items()):
+            if sid == session_id:
+                del self.scopes[digest]
+                forget(digest)
         self.processes.pop(session_id, None)
 
     def close(self) -> None:
         self.closed = True
+        for digest in self.scopes:
+            forget(digest)
         self.scopes.clear()
         self.processes.clear()
         self.active.clear()

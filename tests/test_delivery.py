@@ -14,7 +14,7 @@ import pytest
 
 from agent_bridge import cli, server
 from agent_bridge.api import BridgeService, wait_for_result
-from agent_bridge.delivery import callback_destination, validate_callback
+from agent_bridge.delivery import callback_destinations, validate_callback
 from agent_bridge.hub import create_app
 from agent_bridge.hub_client import HubClient
 from agent_bridge.models import TaskStatus
@@ -341,7 +341,7 @@ async def test_callback_loopback_opt_in_and_empty():
     await validate_callback(None, None)
     for url in ('http://127.0.0.1/result', 'http://[::1]/result', 'http://localhost/result'):
         await validate_callback(url, None, allow_insecure=True)
-    assert (await callback_destination('https://8.8.8.8/result', allow_insecure=False))[0].host == '8.8.8.8'
+    assert (await callback_destinations('https://8.8.8.8/result', allow_insecure=False))[0][0].host == '8.8.8.8'
 
 
 @pytest.mark.parametrize('records', [[], ['8.8.8.8', '127.0.0.1'], ['10.0.0.1']])
@@ -356,6 +356,32 @@ async def test_callback_dns_error(monkeypatch):
     monkeypatch.setattr(asyncio.get_running_loop(), 'getaddrinfo', AsyncMock(side_effect=socket.gaierror('missing')))
     with pytest.raises(ValueError, match='could not be resolved'):
         await validate_callback('https://callback.example', None)
+
+
+@pytest.mark.parametrize('outcome', ['fallback', 'all_unreachable', 'http_error'])
+async def test_callback_tries_each_validated_address(registry, tmp_path, monkeypatch, outcome):
+    addresses = ['2001:4860:4860::8888', '8.8.8.8']
+    records = [(socket.AF_INET6 if ':' in ip else socket.AF_INET, socket.SOCK_STREAM, 0, '', (ip, 443)) for ip in addresses]
+    monkeypatch.setattr(asyncio.get_running_loop(), 'getaddrinfo', AsyncMock(return_value=records))
+    task = await dispatch(registry, tmp_path, callback_url='https://callback.example/result')
+    requests = []
+    real_client = httpx2.AsyncClient
+
+    def handler(request):
+        requests.append(request)
+        assert request.headers['Host'] == 'callback.example'
+        assert request.extensions['sni_hostname'] == 'callback.example'
+        if outcome == 'http_error':
+            return httpx2.Response(503)
+        if len(requests) == 1 or outcome == 'all_unreachable':
+            raise httpx2.ConnectError('unreachable', request=request)
+        return httpx2.Response(200)
+
+    monkeypatch.setattr('agent_bridge.delivery.httpx2.AsyncClient', lambda **kwargs: real_client(transport=httpx2.MockTransport(handler), **kwargs))
+    await registry.deliveries.callback(task)
+    assert [request.url.host for request in requests] == (addresses[:1] if outcome == 'http_error' else addresses)
+    assert task.callback_delivery['status'] == ('delivered' if outcome == 'fallback' else 'pending')
+    assert task.callback_delivery['attempts'] == 1
 
 
 async def test_callback_pins_address_and_revalidates_each_send(registry, tmp_path, monkeypatch):

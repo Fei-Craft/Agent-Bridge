@@ -115,6 +115,21 @@ async def test_worker_dsh_cannot_use_owner_baselines(worker, tmp_path, monkeypat
     result = (await client.post('/v1/agents/dsh/invoke', json=body, headers=headers)).json()
     assert result['ok'] and result['baseline_id'] is None
     assert registry.sessions[result['session_id']].fork_source_id is None
+    for method, path, args in (
+        ('GET', '/v1/baselines', {'params': {'cwd': cwd}}),
+        ('POST', '/v1/baselines', {'json': {'session_id': result['session_id'], 'name': 'worker'}}),
+        ('PUT', '/v1/baselines/default', {'json': {'cwd': cwd, 'baseline_id': None}}),
+    ):
+        response = await client.request(method, path, headers=headers, **args)
+        assert response.status_code == 403 and 'worker token cannot access' in response.json()['error']
+
+    owner = (await client.post('/v1/agents/dsh/invoke', json=body)).json()
+    assert owner['ok'] and owner['baseline_id'] == 'private'
+    assert registry.sessions[owner['session_id']].fork_source_id == 'private-native'
+    response = await client.get('/v1/sessions/' + owner['session_id'] + '/transcript', headers=headers)
+    assert response.status_code == 403
+    response = await client.post('/v1/tasks', json={**body, 'session_id': owner['session_id']}, headers=headers)
+    assert response.status_code == 403
 
 
 async def test_depth_and_self_dispatch(worker, tmp_path):
@@ -133,6 +148,51 @@ async def test_depth_and_self_dispatch(worker, tmp_path):
     owner = (await client.post('/v1/tasks', json=body, headers={'X-Agent-Bridge-Caller': 'unknown'})).json()
     assert owner['ok'] and registry.tasks[owner['task_id']].caller_session_id is None
     assert registry.sessions[owner['session_id']].call_depth == 0
+
+
+@pytest.mark.parametrize('route', ['/v1/tasks', '/v1/agents/fake/invoke'])
+async def test_worker_cannot_use_owner_callback_secret(worker, tmp_path, route):
+    client, registry, _, env = worker
+    await registry.deliveries.stop()
+    vault.store_callback_secret('owner', 'owner-signing-secret' * 3)
+    body = {'message': 'child', 'cwd': str(tmp_path), 'callback_url': 'https://8.8.8.8',
+        'callback_secret_name': 'owner'}
+    if route == '/v1/tasks':
+        body['agent'] = 'fake'
+    before = set(registry.tasks)
+    response = await client.post(route, json=body, headers={'Authorization': 'Bearer ' + env['AGENT_BRIDGE_HUB_TOKEN']})
+    assert response.status_code == 403 and 'admin-only' in response.json()['error']
+    assert set(registry.tasks) == before
+    response = await client.post(route, json=body)
+    assert response.json()['ok']
+    await registry.wait_task(response.json()['task_id'], timeout_sec=5)
+    assert registry.tasks[response.json()['task_id']].callback_signed
+
+
+@pytest.mark.parametrize('route', ['/v1/tasks', '/v1/agents/fake/invoke'])
+async def test_worker_turn_ends_while_reading_body(worker, tmp_path, monkeypatch, route):
+    client, registry, root, env = worker
+    authenticated = asyncio.Event()
+    authenticate = registry.worker_tokens.authenticate
+
+    def check(token):
+        result = authenticate(token)
+        if result is not None:
+            authenticated.set()
+        return result
+
+    monkeypatch.setattr(registry.worker_tokens, 'authenticate', check)
+    before = set(registry.tasks)
+
+    async def body():
+        await asyncio.wait_for(authenticated.wait(), 5)
+        registry.worker_tokens.active.discard(root['session_id'])
+        yield json.dumps({'agent': 'fake', 'message': 'late child', 'cwd': str(tmp_path)}).encode()
+
+    response = await client.post(route, content=body(), headers={'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + env['AGENT_BRIDGE_HUB_TOKEN']})
+    assert response.status_code == 401
+    assert set(registry.tasks) == before
 
 
 @pytest.mark.parametrize(('method', 'path', 'body'), [
@@ -205,6 +265,9 @@ async def test_worker_owned_task_access_and_notify(worker, tmp_path):
     await registry.flush_state()
     for path in registry.home.rglob('*'):
         if path.is_file():
+            if os.name == 'nt' and path.name == 'hub.lock':
+                assert path.stat().st_size == 1
+                continue
             assert token.encode() not in path.read_bytes()
 
 

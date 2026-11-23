@@ -115,12 +115,16 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                 args: dict[str, Any] = dict(request.query_params)
                 if request.method in ('POST', 'PUT'):
                     body = await request.body()
+                    if caller is not None and registry.worker_tokens.authenticate(authorization.removeprefix('Bearer ')) != caller:
+                        return JSONResponse(_error(PermissionError('invalid bearer token')), status_code=401)
                     if body:
                         args.update(json.loads(body))
                 args.update(request.path_params)
                 if 'callback_secret' in args:
                     raise ValueError('raw callback_secret is not accepted; use callback_secret_name from the keyring')
                 if caller is not None:
+                    if args.get('callback_secret_name') is not None:
+                        return JSONResponse(_error(PermissionError('callback_secret_name is admin-only')), status_code=403)
                     if tool in {'check_task', 'wait_task', 'get_result', 'cancel_task'}:
                         task = registry.tasks.get(args.get('task_id', ''))
                         if task is None or task.caller_session_id != caller:
