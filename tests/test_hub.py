@@ -113,6 +113,25 @@ async def test_depth_and_self_dispatch(worker, tmp_path):
     assert registry.sessions[owner['session_id']].call_depth == 0
 
 
+@pytest.mark.parametrize('route', ['/v1/tasks', '/v1/agents/fake/invoke'])
+async def test_worker_cannot_use_owner_callback_secret(worker, tmp_path, route):
+    client, registry, _, env = worker
+    await registry.deliveries.stop()
+    vault.store_callback_secret('owner', 'owner-signing-secret' * 3)
+    body = {'message': 'child', 'cwd': str(tmp_path), 'callback_url': 'https://8.8.8.8',
+        'callback_secret_name': 'owner'}
+    if route == '/v1/tasks':
+        body['agent'] = 'fake'
+    before = set(registry.tasks)
+    response = await client.post(route, json=body, headers={'Authorization': 'Bearer ' + env['AGENT_BRIDGE_HUB_TOKEN']})
+    assert response.status_code == 403 and 'admin-only' in response.json()['error']
+    assert set(registry.tasks) == before
+    response = await client.post(route, json=body)
+    assert response.json()['ok']
+    await registry.wait_task(response.json()['task_id'], timeout_sec=5)
+    assert registry.tasks[response.json()['task_id']].callback_signed
+
+
 @pytest.mark.parametrize(('method', 'path', 'body'), [
     ('POST', '/v1/approvals/forged/approve', {}),
     ('POST', '/v1/approvals/forged/deny', {}),
