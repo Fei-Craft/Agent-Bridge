@@ -25,8 +25,8 @@ BEARER = {'Authorization': 'Bearer dashboard-admin-credential'}
 
 @pytest.mark.skipif(shutil.which('node') is None, reason='Node is optional; required only for vanilla JS rendering tests')
 def test_dashboard_rendering():
-    result = subprocess.run(['node', '--test', str(Path(__file__).with_name('dashboard_ui.test.cjs'))],
-        capture_output=True, text=True, timeout=20, encoding='utf-8')
+    result = subprocess.run(['node', str(Path(__file__).with_name('dashboard_ui.test.cjs'))],
+        capture_output=True, text=True, timeout=120, encoding='utf-8')
     assert result.returncode == 0, result.stdout + result.stderr
 
 

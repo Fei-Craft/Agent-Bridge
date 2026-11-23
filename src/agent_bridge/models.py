@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from pydantic import BaseModel, Field
 
 SELECTION_PATTERN = r'^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]{0,99}$'
-MODEL_PATTERN = r'^[A-Za-z0-9._:/@][A-Za-z0-9._:/@#-]{0,99}$'
+MODEL_PATTERN = r'^[A-Za-z0-9._:/@][A-Za-z0-9._:/@#\\-]{0,99}$'
 Selection = Annotated[str, Field(pattern=MODEL_PATTERN)]
 EffortSelection = Annotated[str, Field(pattern=SELECTION_PATTERN)]
 
