@@ -183,6 +183,9 @@ async def test_worker_owned_task_access_and_notify(worker, tmp_path):
     await registry.flush_state()
     for path in registry.home.rglob('*'):
         if path.is_file():
+            if os.name == 'nt' and path.name == 'hub.lock':
+                assert path.stat().st_size == 1
+                continue
             assert token.encode() not in path.read_bytes()
 
 
