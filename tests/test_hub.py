@@ -12,6 +12,7 @@ import httpx2
 import pytest
 
 from agent_bridge import cli, server
+from agent_bridge import secrets as vault
 from agent_bridge.adapters.acp import AcpAdapter
 from agent_bridge.config import AgentConfig, EnvConfig, load_config
 from agent_bridge.hub import create_app, validate_host
@@ -112,7 +113,11 @@ async def test_native_search_auth_depth_and_mcp_proxy(hub, tmp_path, monkeypatch
     monkeypatch.setattr(httpx2, "AsyncClient", lambda **kwargs: original_client(transport=client._transport, **kwargs))
     monkeypatch.setenv("AGENT_BRIDGE_CALLER_SESSION", root.session_id)
     backend = HubClient("http://hub", "test-token")
+    backend.manual_mode = True
     ctx = types.SimpleNamespace(request_context=types.SimpleNamespace(lifespan_context=backend))
+    blocked = await server.call_capability(ctx, **(body | {"user_requested": False}))
+    assert not blocked["ok"] and "manual" in blocked["error"]
+    assert not registry.tasks
     call = await server.call_capability(ctx, **body)
     result = await server.get_capability_result(ctx, call["call_id"], wait_sec=5, max_chars=6)
     assert result["ok"] and not result["pending"] and result["status"] == "completed"
@@ -133,6 +138,19 @@ async def test_lifecycle_cleanup(bridge_home):
     async with app.router.lifespan_context(app):
         assert (bridge_home / 'hub.json').exists()
     assert not (bridge_home / 'hub.json').exists()
+
+
+async def test_second_hub_cannot_replace_live_discovery(hub, bridge_home):
+    client, _ = hub
+    before = (bridge_home / 'hub.json').read_bytes()
+    token = vault.get(vault.hub_key(bridge_home))
+    other = create_app(Registry.create(bridge_home))
+    with pytest.raises((RuntimeError, TimeoutError)):
+        async with other.router.lifespan_context(other):
+            pass
+    assert (bridge_home / 'hub.json').read_bytes() == before
+    assert vault.get(vault.hub_key(bridge_home)) == token
+    assert (await client.get('/v1/health')).status_code == 200
 
 
 async def test_acp_echo_and_spawn_environment(hub, tmp_path, monkeypatch):
@@ -204,6 +222,22 @@ async def test_discovery_empty_and_unhealthy(bridge_home, monkeypatch):
     assert await discover(bridge_home) is None
     monkeypatch.setenv('AGENT_BRIDGE_HUB_URL', 'http://127.0.0.1:1')
     assert await discover(bridge_home) is None
+
+
+async def test_mcp_proxy_honors_manual_host_mode(hub, monkeypatch, tmp_path):
+    client, registry = hub
+    original = httpx2.AsyncClient
+    monkeypatch.setattr(httpx2, 'AsyncClient', lambda **kwargs: original(transport=client._transport, **kwargs))
+    monkeypatch.setenv('AGENT_BRIDGE_MODE', 'manual')
+    async with server.lifespan(server.mcp) as backend:
+        assert isinstance(backend, HubClient)
+        blocked = await backend.call('dispatch_task', agent='fake', message='no request', cwd=str(tmp_path))
+        assert blocked['ok'] is False
+        assert 'manual' in blocked['error']
+        assert registry.tasks == {}
+        assert (await backend.call('list_agents'))['coordinator']['mode'] == 'manual'
+        accepted = await backend.call('dispatch_task', agent='fake', message='requested', cwd=str(tmp_path), user_requested=True)
+        assert accepted['ok'] is True
 
 
 async def test_client_errors():

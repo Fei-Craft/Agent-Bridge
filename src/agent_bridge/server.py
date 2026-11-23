@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -29,6 +30,7 @@ async def lifespan(_server: MCPServer[Registry | HubClient]) -> AsyncIterator[Re
     setup_logging(home)
     client = await discover(home)
     if client is not None:
+        client.manual_mode = os.environ.get('AGENT_BRIDGE_MODE') == 'manual'
         yield client
         return
     registry = Registry.create(home)

@@ -79,6 +79,7 @@ async def test_codex_search_replay_continuation_and_sources_survive_restart(tmp_
     script.write_text(
         "import json, os, pathlib, sys\n"
         "assert 'AGENT_BRIDGE_HUB_TOKEN' not in os.environ\n"
+        "assert os.environ['AGENT_BRIDGE_HUB'] == 'off'\n"
         "sys.stdin.read()\n"
         "with pathlib.Path('search-submissions.log').open('a') as log:\n"
         "    log.write(('resume' if 'resume' in sys.argv else 'new') + '\\n')\n"

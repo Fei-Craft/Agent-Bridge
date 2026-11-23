@@ -14,7 +14,6 @@ MAX_RAW_CHARS = 64 * 1024
 SEARCH_TOOLS = {"web_search", "web_fetch"}
 SEARCH_PROTOCOLS = {"codex": "codex", "grok": "acp", "minimax": "acp"}
 FORBIDDEN_TOOLS = {"image_gen", "image_edit", "image_to_video", "reference_to_video"}
-HUB_PEER_ENV_KEYS = ("AGENT_BRIDGE_HUB_URL", "AGENT_BRIDGE_HUB_TOKEN", "AGENT_BRIDGE_CALLER_SESSION")
 
 
 def observe_call(task: Task, call_id: Any, name: str) -> bool:

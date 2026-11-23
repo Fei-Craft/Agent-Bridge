@@ -183,6 +183,16 @@ async def turn(registry, name, **kwargs):
     return await registry.get_result(task['task_id'])
 
 
+async def test_rejected_devin_mode_does_not_poison_followups(cloud_registry):
+    first = await turn(cloud_registry, 'devin', model='fast')
+    session = cloud_registry.sessions[first['session_id']]
+    rejected = await turn(cloud_registry, 'devin', session_id=session.session_id, model='ultra')
+    assert rejected['status'] == 'failed'
+    assert session.model == 'fast'
+    resumed = await turn(cloud_registry, 'devin', session_id=session.session_id)
+    assert resumed['status'] == 'completed'
+
+
 def progress_event(monkeypatch, predicate):
     event = asyncio.Event()
     original = CloudAdapter._record

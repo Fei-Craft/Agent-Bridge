@@ -41,7 +41,7 @@ from agent_bridge.minimax_meta import (
     resolve_minimax_model,
 )
 from agent_bridge.models import Session, Task, TaskFailure, TurnResult, dsh_effort, grok_effort
-from agent_bridge.native_search import HUB_PEER_ENV_KEYS, AcpNativeSearch
+from agent_bridge.native_search import AcpNativeSearch
 from agent_bridge.opencode_meta import resolve_opencode_effort
 from agent_bridge.processes import (
     drop_pid,
@@ -896,9 +896,6 @@ class AcpAdapter(Adapter):
                 )
             cmd = with_cursor_cli_model(cmd, session.model)
         env = self._enforce_spawn_env(env)
-        if session.native_search:
-            for key in HUB_PEER_ENV_KEYS:
-                env.pop(key, None)
         kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP

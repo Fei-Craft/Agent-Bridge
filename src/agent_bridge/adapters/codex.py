@@ -21,7 +21,7 @@ from agent_bridge.codex_exec import (
 )
 from agent_bridge.diagnostics import redact_diagnostic
 from agent_bridge.models import Session, Task, TurnResult
-from agent_bridge.native_search import HUB_PEER_ENV_KEYS, observe_codex_search
+from agent_bridge.native_search import observe_codex_search
 from agent_bridge.processes import (
     drop_pid,
     interrupt_then_reap,
@@ -113,9 +113,6 @@ class CodexAdapter(Adapter):
         env = self._worker_env()
         cmd = self._build_cmd(session, task, env)
         env = self._enforce_spawn_env(env)
-        if task.native_search:
-            for key in HUB_PEER_ENV_KEYS:
-                env.pop(key, None)
         kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP

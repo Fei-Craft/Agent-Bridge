@@ -556,6 +556,7 @@ class Registry:
 
     async def stop(self) -> None:
         self._stopping = True
+        self.remote.close()
         await self.deliveries.stop()
         await self._quota_cache.close()
         watchdog = self._watchdog
@@ -733,6 +734,7 @@ class Registry:
         callback_url: str | None = None,
         callback_secret: str | None = None,
         notification_source_task_id: str | None = None,
+        remote_origin: bool = False,
         _native_search: bool = False,
         _previous_call_id: str | None = None,
     ) -> dict:
@@ -787,13 +789,18 @@ class Registry:
         request: tuple = (agent, message, resolved_cwd, session_id, model, effort, title, user_requested)
         if cloud:
             request += (repo, ref)
+        legacy_request = request if not _native_search and not any(
+            (notify_caller, caller_session_id, callback_url, callback_secret)
+        ) else None
         request += (notify_caller, caller_session_id, callback_url, callback_secret)
         if _native_search:
             request += ("native_search", _previous_call_id)
         async with self._lock:
             if request_id is not None and request_id in self._requests:
                 previous_fp, task_id = self._requests[request_id]
-                if previous_fp != _request_fingerprint(request):
+                if previous_fp != _request_fingerprint(request) and (
+                    legacy_request is None or previous_fp != _request_fingerprint(legacy_request)
+                ):
                     raise ValueError("request_id is already bound to a different dispatch request")
                 task = self.tasks[task_id]
                 return {
@@ -853,24 +860,25 @@ class Registry:
                     cwd=resolved_cwd,
                     repo=repo if repo is not None else (agent_cfg.cloud.repo if agent_cfg.cloud else None),
                     ref=ref if ref is not None else (agent_cfg.cloud.ref if agent_cfg.cloud else None),
-                    model=model,
-                    effort=effort,
+                    model=None if cloud else model,
+                    effort=None if cloud else effort,
                     title=title,
                     proc_state=ProcState.spawning,
                 )
                 self._stamp_owner(session)
                 self.sessions[session.session_id] = session
-            if model:
+            if model and not cloud:
                 session.model = model
-            if effort:
+            if effort and not cloud:
                 session.effort = effort
             if title:
                 session.title = title
             if session_id is None:
                 session.cwd = resolved_cwd
             session.last_active_at = iso()
+            session.remote_origin = session.remote_origin or remote_origin
             if caller_session_id:
-                session.call_depth = depth
+                session.call_depth = max(session.call_depth, depth)
             task = Task(
                 native_search=_native_search,
                 request_id=request_id if _native_search else None,
@@ -996,7 +1004,9 @@ class Registry:
         started_monotonic = time.monotonic()
         task = self.tasks[task_id]
         session = self.sessions[task.session_id]
-        if hub_worker_context.get():
+        if session.remote_origin or session.native_search:
+            hub_worker_context.set({'AGENT_BRIDGE_HUB': 'off'})
+        elif hub_worker_context.get():
             hub_worker_context.set({**hub_worker_context.get(), 'AGENT_BRIDGE_CALLER_SESSION': session.session_id})
         adapter = self._adapter_for(session)
         task.status = TaskStatus.running
@@ -1607,14 +1617,14 @@ class Registry:
             try:
                 await asyncio.wait_for(event.wait(), timeout=timeout_sec)
             except TimeoutError:
-                return {"timed_out": True, **self._task_snapshot(self.tasks[task_id])}
+                return redact({"timed_out": True, **self._task_snapshot(self.tasks[task_id])})
         # A terminal answer must also be on disk, not merely queued
         # behind the background flusher.
-        return {
+        return redact({
             "timed_out": False,
             "persisted": (await self._persisted(task)) is True,
             **self._task_snapshot(self.tasks[task_id], include_result=True),
-        }
+        })
 
     async def check_task(self, task_id: str) -> dict:
         task = self._require_task(task_id, allow_disk=True)
