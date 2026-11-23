@@ -169,6 +169,22 @@ async def test_discovery_empty_and_unhealthy(bridge_home, monkeypatch):
     assert await discover(bridge_home) is None
 
 
+async def test_mcp_proxy_honors_manual_host_mode(hub, monkeypatch, tmp_path):
+    client, registry = hub
+    original = httpx2.AsyncClient
+    monkeypatch.setattr(httpx2, 'AsyncClient', lambda **kwargs: original(transport=client._transport, **kwargs))
+    monkeypatch.setenv('AGENT_BRIDGE_MODE', 'manual')
+    async with server.lifespan(server.mcp) as backend:
+        assert isinstance(backend, HubClient)
+        blocked = await backend.call('dispatch_task', agent='fake', message='no request', cwd=str(tmp_path))
+        assert blocked['ok'] is False
+        assert 'manual' in blocked['error']
+        assert registry.tasks == {}
+        assert (await backend.call('list_agents'))['coordinator']['mode'] == 'manual'
+        accepted = await backend.call('dispatch_task', agent='fake', message='requested', cwd=str(tmp_path), user_requested=True)
+        assert accepted['ok'] is True
+
+
 async def test_client_errors():
     result = await HubClient('http://127.0.0.1:1').call('list_agents')
     assert result['ok'] is False
