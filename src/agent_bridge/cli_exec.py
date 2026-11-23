@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_bridge.config import AgentConfig
-from agent_bridge.models import Session, Task
+from agent_bridge.models import Session, Task, validate_selection
 from agent_bridge.processes import resolve_command
 
 
@@ -29,11 +29,21 @@ def build_cli_argv(agent: AgentConfig, session: Session, task: Task) -> list[str
     values = {'prompt': task.message, 'session': session.native_session_id or '',
               'model': task.model or session.model or '', 'effort': task.effort or session.effort or '',
               'cwd': task.cwd or session.cwd}
+    validate_selection(values['model'] or None, 'model')
+    validate_selection(values['effort'] or None, 'effort')
+    cmd = cli_command(agent)
+    options_ended = '--' in cmd
 
     def expand(args: list[str]) -> list[str]:
+        nonlocal options_ended
+        for arg in args:
+            if '{prompt}' in arg and (cfg.prompt_stdin or arg != '{prompt}' or not options_ended):
+                raise ValueError('CLI prompt must use stdin without a {prompt} slot, or a positional {prompt} after --')
+            if arg == '--':
+                options_ended = True
         return [arg.format_map(values) for arg in args]
 
-    cmd = cli_command(agent) + expand(cfg.extra_args)
+    cmd += expand(cfg.extra_args)
     if session.native_session_id:
         if not cfg.resume_args:
             raise ValueError('CLI emitted a session id but cli.resume_args is not configured')

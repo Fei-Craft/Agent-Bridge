@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import re
 import tomllib
@@ -11,6 +12,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, model_validator
 
+from agent_bridge.models import EffortSelection, Selection
 from agent_bridge.paths import bridge_home, bundled_agents_toml
 from agent_bridge.persist import atomic_write_text
 
@@ -109,13 +111,19 @@ DEFAULT_INHERIT_KEYS = (
 
 class CliConfig(BaseModel):
     command: list[str] = Field(default_factory=list)
-    prompt_args: list[str] = Field(default_factory=lambda: ['{prompt}'])
+    prompt_args: list[str] = Field(default_factory=lambda: ['--', '{prompt}'])
     prompt_stdin: bool = False
     resume_args: list[str] = Field(default_factory=list)
     model_args: list[str] = Field(default_factory=list)
     effort_args: list[str] = Field(default_factory=list)
     extra_args: list[str] = Field(default_factory=list)
     parser: Literal['text', 'jsonl', 'claude', 'opencode', 'cursor'] = 'text'
+
+    @model_validator(mode='after')
+    def default_prompt_transport(self) -> CliConfig:
+        if self.prompt_stdin and 'prompt_args' not in self.model_fields_set:
+            self.prompt_args = []
+        return self
 
 
 class CloudConfig(BaseModel):
@@ -127,8 +135,8 @@ class CloudConfig(BaseModel):
     repo: str | None = None
     ref: str | None = None
     auto_create_pr: bool = False
-    model: str | None = None
-    devin_mode: str | None = None
+    model: Selection | None = None
+    devin_mode: Selection | None = None
     max_acu_limit: int | None = Field(default=None, gt=0)
     poll_interval_sec: float = Field(default=5, gt=0)
 
@@ -170,6 +178,21 @@ class AgentConfig(BaseModel):
     # key=value). No key validation, no filtering, user config.toml is
     # never read.
     config_overrides: list[str] = Field(default_factory=list)
+    remote_allow_unsafe_permissions: bool = False
+    remote_allowed_models: list[Selection] = Field(default_factory=list)
+    remote_allowed_efforts: list[EffortSelection] = Field(default_factory=list)
+
+    def unsafe_remote_permissions(self) -> bool:
+        argv = [*self.command, *(arg for cmd in self.fallback_commands for arg in cmd),
+                *self.cli.command, *self.cli.extra_args, *self.cli.resume_args,
+                *self.cli.model_args, *self.cli.effort_args, *self.cli.prompt_args]
+        unsafe = {'--dangerously-skip-permissions', '--auto', '--yolo', '--full-auto',
+                  '--dangerously-bypass-approvals-and-sandbox', '--force',
+                  '--allow-dangerously-skip-permissions'}
+        return (self.protocol == 'agy' or self.session_meta.get('yolo') in (True, 'true', 1)
+                or any(arg.split('=', 1)[0] in unsafe for arg in argv)
+                or any(value.strip('\"\'') in {'bypassPermissions', 'danger-full-access'}
+                       for arg in [*argv, *self.config_overrides] for value in arg.split('=')))
 
     @model_validator(mode='after')
     def validate_protocol(self) -> AgentConfig:
@@ -271,16 +294,21 @@ class RemoteConfig(BaseModel):
     port: int = Field(default=8766, ge=1, le=65535)
     remote_callable_agents: list[str] = Field(default_factory=list)
     remote_workspaces: dict[str, str] = Field(default_factory=dict)
-    token_ttl_sec: float | None = Field(default=None, gt=0)
+    token_ttl_sec: float = Field(default=3600, gt=0)
     result_fetch_grace_sec: float = Field(default=30, ge=0, le=300)
     max_calls_per_token: int = Field(default=16, ge=1)
     max_concurrent_per_token: int = Field(default=2, ge=1)
     rate_limit_per_min: int = Field(default=60, ge=1)
     max_body_bytes: int = Field(default=65536, ge=1)
-    require_approval: bool = False
+    require_approval: bool = True
     public_url: str = ''
     access_note: str = ''
-    require_cf_access: bool = False
+    @model_validator(mode='before')
+    @classmethod
+    def reject_removed_access_option(cls, value: Any) -> Any:
+        if isinstance(value, dict) and 'require_cf_access' in value:
+            raise ValueError('require_cf_access was removed; configure Cloudflare Access authentication at the edge')
+        return value
 
     @model_validator(mode='after')
     def validate_remote(self) -> RemoteConfig:
@@ -303,6 +331,7 @@ class HubConfig(BaseModel):
     host: str = '127.0.0.1'
     port: int = Field(default=8765, ge=1, le=65535)
     max_depth: int = Field(default=3, ge=0)
+    allow_insecure_callbacks: bool = False
     remote: RemoteConfig = Field(default_factory=RemoteConfig)
 
     @model_validator(mode='after')
@@ -320,6 +349,21 @@ class AppConfig(BaseModel):
     coordinator: CoordinatorConfig = Field(default_factory=CoordinatorConfig)
     quota: QuotaConfig = Field(default_factory=QuotaConfig)
     warnings: list[str] = Field(default_factory=list)
+
+    def validate_remote_agents(self) -> None:
+        if not self.hub.remote.enabled:
+            return
+        for name in self.hub.remote.remote_callable_agents:
+            agent = self.get(name)
+            if agent.remote_allow_unsafe_permissions:
+                logging.getLogger(__name__).warning('remote agent %s explicitly allows unsafe permissions', name)
+            elif agent.unsafe_remote_permissions():
+                raise ValueError(f'remote agent {name} skips permissions; set remote_allow_unsafe_permissions=true to explicitly opt in')
+
+    @model_validator(mode='after')
+    def validate_remote_boundary(self) -> AppConfig:
+        self.validate_remote_agents()
+        return self
 
     def get(self, name: str) -> AgentConfig:
         if name not in self.agents:
