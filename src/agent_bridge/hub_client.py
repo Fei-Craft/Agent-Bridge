@@ -74,8 +74,9 @@ class HubClient:
             result: dict[str, Any] = response.json()
         if tool == 'list_agents':
             result.update(backend='hub', hub_url=self.url)
-            if self.host_manual_mode and 'coordinator' in result:
-                result['coordinator']['mode'] = 'manual'
+        if self.host_manual_mode and 'coordinator' in result:
+            result['coordinator']['hub_mode'] = result['coordinator']['mode']
+            result['coordinator']['mode'] = 'manual'
         return result
 
     def __getattr__(self, name: str) -> Any:
