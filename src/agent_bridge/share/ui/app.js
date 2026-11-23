@@ -89,7 +89,8 @@ function renderGateway() {
   field(grid, '允许调用的代理', remote.agents.length ? remote.agents.join(' · ') : '无');
   const workspaces = node('ul', undefined, 'workspace-list');
   for (const [name, path] of Object.entries(remote.workspaces)) {
-    const row = node('li'); row.append(node('span', name, 'workspace-name'), node('span', '→', 'muted'), node('span', path, 'mono')); workspaces.append(row);
+    const row = node('li'); row.append(node('span', name, 'workspace-name'), node('span', '→', 'muted'),
+      node('span', path || '路径不可用（无法解析）', path ? 'mono' : 'muted')); workspaces.append(row);
   }
   field(grid, '命名工作区', workspaces.childElementCount ? workspaces : '未配置', 'wide');
   $('gateway-status').replaceChildren(grid);
@@ -135,7 +136,7 @@ function eventText(event) {
   const data = event.data || {}, item = data.payload?.item || data.payload || data.value || {};
   if (event.type.startsWith('tool_call')) return [data.title || item.command || data.path || data.kind || item.type,
     labels[data.status] || data.status].filter(Boolean).join(' · ');
-  return values(data.text || data.title || data.stderr || data.path || item.text || item.message ||
+  return values(data.text || data.title || data.stderr || data.path || item.step_update?.text_delta || item.text_delta || item.delta || item.text || item.message ||
     data.status_detail || data.status || data.stop_reason || data.error || item.type || data.update_type || '');
 }
 function appendTranscript(events) {
@@ -235,7 +236,9 @@ async function initialize() {
     $('sessions').replaceChildren(...sessionData.sessions.map(session => node('p', session.session_id + ' · ' + session.agent + ' · ' + session.proc_state + ' · ' + session.cwd)));
     if (!sessionData.sessions.length) $('sessions').textContent = '暂无会话';
     await refresh();
-    for (const [name] of Object.entries(snapshot.remote.workspaces)) { const option = node('option', name); option.value = name; $('workspace').append(option); }
+    for (const [name, path] of Object.entries(snapshot.remote.workspaces)) {
+      const option = node('option', name + (path ? '' : ' · 路径不可用')); option.value = name; option.disabled = !path; $('workspace').append(option);
+    }
   } catch (error) { notice('登录未完成：' + error.message + '。请运行 agent-bridge ui。', true); }
 }
 document.querySelectorAll('nav button').forEach(item => item.addEventListener('click', () => show(item.dataset.page)));

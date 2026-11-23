@@ -114,7 +114,7 @@ async def test_native_search_auth_depth_and_mcp_proxy(hub, tmp_path, monkeypatch
     monkeypatch.setattr(httpx2, "AsyncClient", lambda **kwargs: original_client(transport=client._transport, **kwargs))
     monkeypatch.setenv("AGENT_BRIDGE_CALLER_SESSION", root.session_id)
     backend = HubClient("http://hub", "test-token")
-    backend.manual_mode = True
+    backend.host_manual_mode = True
     ctx = types.SimpleNamespace(request_context=types.SimpleNamespace(lifespan_context=backend))
     blocked = await server.call_capability(ctx, **(body | {"user_requested": False}))
     assert not blocked["ok"] and "manual" in blocked["error"]
@@ -240,14 +240,29 @@ async def test_mcp_proxy_honors_manual_host_mode(hub, monkeypatch, tmp_path):
         accepted = await backend.call('dispatch_task', agent='fake', message='requested', cwd=str(tmp_path), user_requested=True)
         assert accepted['ok'] is True
         assert not (await backend.call('set_preferences', mode='invalid'))['ok']
-        assert backend.manual_mode
+        assert backend.host_manual_mode
         changed = await backend.call('set_preferences', mode='auto')
-        assert changed['ok'] and not backend.manual_mode
-        assert (await backend.call('list_agents'))['coordinator']['mode'] == 'auto'
+        assert changed['ok'] and backend.host_manual_mode
+        assert (await backend.call('list_agents'))['coordinator']['mode'] == 'manual'
         automatic = await backend.call('dispatch_task', agent='fake', message='automatic', cwd=str(tmp_path))
-        assert automatic['ok']
+        assert not automatic['ok']
         assert (await backend.call('set_preferences', mode='manual'))['ok']
         assert not (await backend.call('dispatch_task', agent='fake', message='blocked again', cwd=str(tmp_path)))['ok']
+
+
+async def test_mcp_proxies_follow_current_shared_preferences(hub, monkeypatch, tmp_path):
+    client, _ = hub
+    original = httpx2.AsyncClient
+    monkeypatch.setattr(httpx2, 'AsyncClient', lambda **kwargs: original(transport=client._transport, **kwargs))
+    monkeypatch.delenv('AGENT_BRIDGE_MODE', raising=False)
+    async with server.lifespan(server.mcp) as first, server.lifespan(server.mcp) as second:
+        assert (await first.call('set_preferences', mode='manual'))['ok']
+        assert (await first.call('list_agents'))['coordinator']['mode'] == 'manual'
+        assert not (await first.call('dispatch_task', agent='fake', message='blocked', cwd=str(tmp_path)))['ok']
+        assert (await second.call('set_preferences', mode='auto'))['ok']
+        assert (await first.call('list_agents'))['coordinator']['mode'] == 'auto'
+        invoked = await first.call('invoke', agent='fake', message='automatic', cwd=str(tmp_path), timeout_sec=5)
+        assert invoked['ok'] and invoked['status'] == 'completed'
 
 
 async def test_client_errors():
