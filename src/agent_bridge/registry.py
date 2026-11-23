@@ -829,7 +829,7 @@ class Registry:
                     repo=repo if repo is not None else (agent_cfg.cloud.repo if agent_cfg.cloud else None),
                     ref=ref if ref is not None else (agent_cfg.cloud.ref if agent_cfg.cloud else None),
                     model=None if cloud or generic_acp else model,
-                    effort=None if cloud else effort,
+                    effort=None if cloud or generic_acp else effort,
                     title=title,
                     proc_state=ProcState.spawning,
                 )
@@ -837,7 +837,7 @@ class Registry:
                 self.sessions[session.session_id] = session
             if model and not (cloud or generic_acp):
                 session.model = model
-            if effort and not cloud:
+            if effort and not (cloud or generic_acp):
                 session.effort = effort
             if title:
                 session.title = title
@@ -903,7 +903,7 @@ class Registry:
             "session_id": session.session_id,
             "agent": agent,
             "model": task.model if generic_acp else session.model,
-            "effort": session.effort,
+            "effort": task.effort if generic_acp else session.effort,
             "persisted": persisted,
             **({"request_id": request_id, "reused": False} if request_id is not None else {}),
         }

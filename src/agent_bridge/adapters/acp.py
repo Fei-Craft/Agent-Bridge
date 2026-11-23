@@ -1543,11 +1543,12 @@ class AcpAdapter(Adapter):
         live.applied_effort = level
 
     async def _sync_generic_acp_selection(
-        self, live: _Live, session: Session, requested_model: str | None,
+        self, live: _Live, session: Session, task: Task | None,
     ) -> None:
         """Apply advertised config without losing a tiered request on session reload."""
         if not uses_generic_acp_selection(self.agent) or live.conn is None or not session.native_session_id:
             return
+        requested_model = task.model if task is not None else None
         tier: str | None = None
         model = requested_model or session.model
         if model:
@@ -1568,6 +1569,8 @@ class AcpAdapter(Adapter):
                     session.model = requested_model or session.model
                 elif live.applied_model is not None:
                     session.model = live.applied_model
+        if task is not None and task.effort is not None:
+            session.effort = task.effort
         effort = session.effort or tier
         if not effort:
             return
@@ -1604,7 +1607,7 @@ class AcpAdapter(Adapter):
         )
 
     async def _sync_selection(
-        self, live: _Live, session: Session, requested_model: str | None = None,
+        self, live: _Live, session: Session, task: Task | None = None,
     ) -> None:
         try:
             await self._sync_grok_model(live, session)
@@ -1616,7 +1619,7 @@ class AcpAdapter(Adapter):
             await self._sync_dsh_selection(live, session)
             await self._sync_zcode_selection(live, session)
             await self._sync_minimax_selection(live, session)
-            await self._sync_generic_acp_selection(live, session, requested_model)
+            await self._sync_generic_acp_selection(live, session, task)
         except Exception as exc:
             raise self._failure(exc, "session/configure", session) from None
 
@@ -1706,7 +1709,7 @@ class AcpAdapter(Adapter):
             current_effort, _offered = config_option_values(live.config_options, "reasoning_effort")
             live.applied_effort = current_effort or None
 
-    async def ensure_session(self, session: Session, *, requested_model: str | None = None) -> None:
+    async def ensure_session(self, session: Session, *, task: Task | None = None) -> None:
         live = self._live.get(session.session_id)
         if (
             live
@@ -1731,7 +1734,7 @@ class AcpAdapter(Adapter):
                 session.native_session_id = None
                 await self.shutdown(session)
             else:
-                await self._sync_selection(live, session, requested_model)
+                await self._sync_selection(live, session, task)
                 return
         live = await self._spawn(session)
         native = session.native_session_id
@@ -1757,7 +1760,7 @@ class AcpAdapter(Adapter):
                 load_failure = exc
             else:
                 self._remember_config_options(live, revived)
-                await self._sync_selection(live, session, requested_model)
+                await self._sync_selection(live, session, task)
                 return
         created = await self._rpc(
             self._call_new_session(live.conn, session.cwd, self._new_session_meta(session)),
@@ -1793,14 +1796,14 @@ class AcpAdapter(Adapter):
             # effort-only dispatch does not raise a spurious warning, and let
             # _sync_grok_model switch the model via session/setModel.
             live.applied_effort = grok_effort(session.effort)
-        await self._sync_selection(live, session, requested_model)
+        await self._sync_selection(live, session, task)
 
     async def run_turn(self, session: Session, task: Task) -> TurnResult:
         live = self._live.get(session.session_id)
         if live is not None:
             live.stderr_tail = ""
         try:
-            await self.ensure_session(session, requested_model=task.model)
+            await self.ensure_session(session, task=task)
         except Exception as exc:
             raise self._failure(exc, "process_start", session) from None
         live = self._live[session.session_id]

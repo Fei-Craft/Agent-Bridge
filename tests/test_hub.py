@@ -165,7 +165,8 @@ async def test_generic_acp_selection_through_hub(
         assert not follow_up['warnings']
 
 
-async def test_rejected_generic_acp_model_does_not_poison_follow_up(hub, tmp_path):
+@pytest.mark.parametrize('override_effort', [None, 'low'])
+async def test_rejected_generic_acp_model_does_not_poison_follow_up(hub, tmp_path, override_effort):
     client, registry = hub
     registry.config.agents['echo'] = AgentConfig(
         name='echo', protocol='acp',
@@ -177,9 +178,10 @@ async def test_rejected_generic_acp_model_does_not_poison_follow_up(hub, tmp_pat
     first = (await client.post(path, json={**body, 'model': 'family-xhigh'})).json()
     assert first['status'] == 'completed'
     body['session_id'] = first['session_id']
-    rejected = (await client.post(path, json={**body, 'model': 'unknown-model'})).json()
+    rejected = (await client.post(path, json={**body, 'model': 'unknown-model', 'effort': override_effort})).json()
     assert rejected['status'] == 'failed'
     assert rejected['model'] == 'unknown-model'
+    assert rejected['effort'] == override_effort
     assert "rejected model 'unknown-model'" in rejected['error']
     follow_up = (await client.post(path, json=body)).json()
     assert follow_up['status'] == 'completed'
