@@ -15,6 +15,7 @@ not something to fix from here.
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -26,6 +27,7 @@ from agent_bridge.quota import (
     QuotaStatus,
     QuotaWindow,
     as_float,
+    clamp_percent,
     get_json,
     summarize_quota,
     unknown_quota,
@@ -114,6 +116,20 @@ def parse_kimi_usage(payload: Mapping[str, Any] | None) -> QuotaStatus:
     if not isinstance(payload, Mapping):
         return unknown_quota("kimi returned no usage payload", source=SOURCE)
     windows: list[QuotaWindow] = []
+    usages = payload.get("usages")
+    if isinstance(usages, Mapping):
+        # limit_month_code is a breakdown of the monthly total, not a separate cap.
+        for key, name in (("limit_5h", "5h"), ("limit_7d", "weekly"), ("limit_month_total", "monthly")):
+            entry = usages.get(key)
+            if not isinstance(entry, Mapping):
+                continue
+            used_ratio = as_float(entry.get("used_ratio"))
+            if used_ratio is not None and math.isfinite(used_ratio):
+                remaining = clamp_percent((1 - used_ratio) * 100)
+                windows.append(window_from_reset(name, remaining, entry.get("reset_time")))
+    if windows:
+        return summarize_quota(windows, source=SOURCE)
+
     summary = payload.get("usage")
     if isinstance(summary, Mapping):
         label = summary.get("name") or summary.get("title") or "weekly"

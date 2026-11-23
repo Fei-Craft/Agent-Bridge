@@ -421,6 +421,33 @@ def test_parse_kimi_usage_empty_is_unknown():
     assert parse_kimi_usage(None).status == "unknown"
 
 
+def test_parse_kimi_usage_reads_managed_quota_windows():
+    status = parse_kimi_usage({
+        "usages": {
+            "limit_5h": {"used_ratio": 0, "reset_time": "2100-01-01T05:00:00Z"},
+            "limit_7d": {"used_ratio": "0.25"},
+            "limit_month_total": {"used_ratio": 1},
+            "limit_month_code": {"used_ratio": 0.3},
+        },
+    })
+    assert status.status == "exhausted"
+    assert [(w.name, w.remaining_percent) for w in status.windows] == [("5h", 100), ("weekly", 75), ("monthly", 0)]
+    assert status.windows[0].resets_at == "2100-01-01T05:00:00+00:00"
+    assert status.windows[1].resets_at is None
+
+
+def test_parse_kimi_usage_ignores_invalid_managed_windows_and_monthly_breakdown():
+    status = parse_kimi_usage({
+        "usages": {
+            "limit_5h": {"used_ratio": "NaN"},
+            "limit_7d": {"reset_time": "2100-01-01T00:00:00Z"},
+            "limit_month_total": False,
+            "limit_month_code": {"used_ratio": 0.25},
+        },
+    })
+    assert status.status == "unknown"
+
+
 @pytest.mark.asyncio
 async def test_kimi_provider_explains_api_key_sessions(tmp_path: Path):
     status = await fetch_kimi_quota(

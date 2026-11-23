@@ -236,7 +236,7 @@ async def test_kimi_default_file_oauth_slots_use_official_quota(tmp_path, monkey
     async def fake_get(url, *, headers, env, timeout):
         assert url == "https://api.kimi.com/coding/v1/usages"
         assert headers == {"Authorization": "Bearer test-token"}
-        return {"usage": {"used": 1, "limit": 4}}
+        return {"usages": {"limit_7d": {"used_ratio": 0.25}}}
 
     monkeypatch.setattr("agent_bridge.quota_kimi.get_json", fake_get)
     status = await fetch_kimi_quota(cfg("kimi"), {})
