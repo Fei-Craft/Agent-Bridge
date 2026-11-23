@@ -609,9 +609,12 @@ def build_worker_env(
             if hub_worker_context.get().get('AGENT_BRIDGE_HUB') == 'off':
                 env.pop(key, None)
                 continue
-            value = hub_worker_context.get().get(key) or (base or os.environ).get(key)
+            value = (hub_worker_context.get().get(key) if hub_worker_context.get()
+                     else (base or os.environ).get(key))
             if value:
                 env[key] = value
+            else:
+                env.pop(key, None)
         if hub_worker_context.get().get('AGENT_BRIDGE_HUB') == 'off':
             env['AGENT_BRIDGE_HUB'] = 'off'
         env[WORKER_CONTEXT_ENV] = WORKER_CONTEXT_VALUE

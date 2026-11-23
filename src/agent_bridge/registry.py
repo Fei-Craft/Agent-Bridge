@@ -15,7 +15,7 @@ from typing import Any, Literal
 import psutil
 
 from agent_bridge.adapters import build_adapter
-from agent_bridge.adapters.acp import AcpError, uses_generic_acp_selection
+from agent_bridge.adapters.acp import AcpAdapter, AcpError, uses_generic_acp_selection
 from agent_bridge.adapters.base import Adapter
 from agent_bridge.adapters.cloud import CloudAdapter
 from agent_bridge.config import (
@@ -40,6 +40,7 @@ from agent_bridge.models import (
     TaskStatus,
     iso,
     normalize_effort,
+    validate_selection,
 )
 from agent_bridge.paths import ensure_home, result_path, state_path, transcript_path
 from agent_bridge.persist import (
@@ -51,7 +52,7 @@ from agent_bridge.persist import (
 from agent_bridge.probes import probe_agent
 from agent_bridge.processes import count_sibling_servers, owner_alive, process_create_time, reap_orphans
 from agent_bridge.quota import QuotaCache, fetch_quota, looks_like_quota_error, provider_table, unknown_quota
-from agent_bridge.secrets import cloud_key, migrate, redact
+from agent_bridge.secrets import cloud_key, load_callback_secret, migrate, redact
 from agent_bridge.transcript import (
     append_event,
     flush_pending,
@@ -67,11 +68,13 @@ from agent_bridge.transcript import (
 )
 from agent_bridge.worker_env import (
     build_worker_env,
+    caller_session_context,
     describe_env,
     hub_worker_context,
     install_host_env,
     is_worker_context,
 )
+from agent_bridge.worker_tokens import WorkerTokens
 from agent_bridge.workspace import merge_files_changed, snapshot_workspace
 
 log = logging.getLogger(__name__)
@@ -191,6 +194,8 @@ class Registry:
         self._sibling_cache: tuple[float, int] | None = None
         self._quota_cache = QuotaCache(config.quota.cache_sec)
         self._stopping = False
+        self.worker_tokens = WorkerTokens()
+        self.worker_url: str | None = None
         self.deliveries = Deliveries(self)
         from agent_bridge.remote import RemoteGateway
 
@@ -550,6 +555,7 @@ class Registry:
 
     async def stop(self) -> None:
         self._stopping = True
+        self.worker_tokens.close()
         self.remote.close()
         await self.deliveries.stop()
         await self._quota_cache.close()
@@ -600,6 +606,8 @@ class Registry:
         if existing is not None:
             return existing
         adapter = build_adapter(self.config.get(session.agent), self.home, self.config.env)
+        if self.worker_url is not None:
+            adapter.worker_tokens = self.worker_tokens
         if isinstance(adapter, CloudAdapter):
             adapter.on_progress = self.save
         self._adapters[session.session_id] = adapter
@@ -726,12 +734,14 @@ class Registry:
         notify_caller: bool = False,
         caller_session_id: str | None = None,
         callback_url: str | None = None,
-        callback_secret: str | None = None,
+        callback_secret_name: str | None = None,
         notification_source_task_id: str | None = None,
         remote_origin: bool = False,
     ) -> dict:
         if not self.dispatch_enabled:
             raise RuntimeError(NESTED_DISPATCH_ERROR)
+        validate_selection(model, 'model')
+        validate_selection(effort, 'effort')
         caller_task = self._busy_task(caller_session_id) if caller_session_id else None
         if caller_session_id and caller_session_id not in self.sessions:
             raise ValueError('unknown caller session')
@@ -741,8 +751,9 @@ class Registry:
         if not notification_source_task_id and depth > min(3, self.config.hub.max_depth):
             raise ValueError('hub max_depth exceeded')
         if caller_task and caller_task.notification_source_task_id:
-            notify_caller, callback_url, callback_secret = False, None, None
-        validate_callback(callback_url, callback_secret)
+            notify_caller, callback_url, callback_secret_name = False, None, None
+        callback_secret = load_callback_secret(callback_secret_name)
+        await validate_callback(callback_url, callback_secret, allow_insecure=self.config.hub.allow_insecure_callbacks)
         if notify_caller and (not caller_session_id or caller_session_id not in self.sessions):
             raise ValueError('notify_caller requires a hub worker caller session')
         if notification_source_task_id and (notify_caller or callback_url):
@@ -778,8 +789,8 @@ class Registry:
         request: tuple = (agent, message, resolved_cwd, session_id, model, effort, title, user_requested)
         if cloud:
             request += (repo, ref)
-        legacy_request = request if not any((notify_caller, caller_session_id, callback_url, callback_secret)) else None
-        request += (notify_caller, caller_session_id, callback_url, callback_secret)
+        legacy_request = request if not any((notify_caller, caller_session_id, callback_url, callback_secret_name)) else None
+        request += (notify_caller, caller_session_id, callback_url, callback_secret_name)
         async with self._lock:
             if request_id is not None and request_id in self._requests:
                 previous_fp, task_id = self._requests[request_id]
@@ -802,6 +813,8 @@ class Registry:
                 session = self.sessions.get(session_id)
                 if session is None:
                     raise KeyError(f"unknown session {session_id}")
+                if caller_session_id and caller_session_context.get() == caller_session_id and session.caller_session_id != caller_session_id:
+                    raise ValueError('session is not owned by caller')
                 if session.agent != agent:
                     raise ValueError(f"session {session_id} belongs to agent {session.agent}, not {agent}")
                 if cloud and repo is not None and repo != session.repo:
@@ -820,8 +833,11 @@ class Registry:
                     raise RuntimeError(
                         f"session {session.session_id} is busy with {busy.task_id}; call wait_task first"
                     )
+                if session.caller_session_id != caller_session_id:
+                    session.caller_session_id = None
             else:
                 session = Session(
+                    caller_session_id=caller_session_id,
                     call_depth=depth,
                     session_id=_new_id("sess"),
                     agent=agent,
@@ -913,10 +929,6 @@ class Registry:
         started_monotonic = time.monotonic()
         task = self.tasks[task_id]
         session = self.sessions[task.session_id]
-        if session.remote_origin:
-            hub_worker_context.set({'AGENT_BRIDGE_HUB': 'off'})
-        elif hub_worker_context.get():
-            hub_worker_context.set({**hub_worker_context.get(), 'AGENT_BRIDGE_CALLER_SESSION': session.session_id})
         adapter = self._adapter_for(session)
         task.status = TaskStatus.running
         task.started_at = iso()
@@ -925,7 +937,16 @@ class Registry:
         self.save()
         watch = None
         before: dict[str, tuple[int, int]] | None = None
+        worker_context = None
         try:
+            self.worker_tokens.active.add(session.session_id)
+            if session.remote_origin:
+                worker_context = hub_worker_context.set({'AGENT_BRIDGE_HUB': 'off'})
+            elif self.worker_url is not None:
+                env = {'AGENT_BRIDGE_HUB_URL': self.worker_url}
+                if not isinstance(adapter, AcpAdapter):
+                    env['AGENT_BRIDGE_HUB_TOKEN'] = self.worker_tokens.issue(session.session_id)
+                worker_context = hub_worker_context.set(env)
             mark_worker_activity(session.session_id, self.home)
             if self.config.get(session.agent).protocol != 'cloud':
                 before = await asyncio.to_thread(snapshot_workspace, task.cwd)
@@ -1024,6 +1045,12 @@ class Registry:
                     task.failure = exc.failure if isinstance(exc, AcpError) else None
                     task.stop_reason = "error"
         finally:
+            self.worker_tokens.active.discard(session.session_id)
+            process = self.worker_tokens.processes.get(session.session_id)
+            if process is None or process.returncode is not None:
+                self.worker_tokens.revoke(session.session_id)
+            if worker_context is not None:
+                hub_worker_context.reset(worker_context)
             self.remote.finish(task_id)
             self._cancel_requested.discard(task_id)
             if watch is not None:
@@ -1645,6 +1672,7 @@ class Registry:
         session = self.sessions.get(session_id)
         if session is None:
             raise KeyError(f"unknown session {session_id}")
+        self.worker_tokens.revoke(session_id)
         busy = self._busy_task(session_id)
         if busy is not None:
             await self.cancel_task(busy.task_id)

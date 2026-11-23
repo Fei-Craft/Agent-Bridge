@@ -30,6 +30,7 @@ async def test_remote_peer_notify_back_to_cloud(cloud_registry, provider, tmp_pa
     registry = cloud_registry
     await registry.deliveries.stop()
     registry.config.hub.remote = RemoteConfig(enabled=True, public_url='http://127.0.0.1:8766',
+        require_approval=False,
         remote_callable_agents=['fake'], remote_workspaces={'project': str(tmp_path)})
     registry.remote = RemoteGateway(registry)
     handler = provider[1]

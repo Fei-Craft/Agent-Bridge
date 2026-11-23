@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
+
+SELECTION_PATTERN = r'^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]{0,99}$'
+MODEL_PATTERN = r'^[A-Za-z0-9._:/@][A-Za-z0-9._:/@#-]{0,99}$'
+Selection = Annotated[str, Field(pattern=MODEL_PATTERN)]
+EffortSelection = Annotated[str, Field(pattern=SELECTION_PATTERN)]
+
+
+def validate_selection(value: str | None, name: str) -> None:
+    pattern = MODEL_PATTERN if name == 'model' else SELECTION_PATTERN
+    if value is not None and (not isinstance(value, str) or not re.fullmatch(pattern, value)):
+        raise ValueError(f'{name} must match {pattern}')
 
 
 def utcnow() -> datetime:
@@ -90,6 +102,7 @@ def grok_effort(effort: str | None) -> str | None:
 
 
 class Session(BaseModel):
+    caller_session_id: str | None = None
     remote_origin: bool = False
     call_depth: int = 0
     notification_receipts: dict[str, str] = Field(default_factory=dict)
@@ -101,8 +114,8 @@ class Session(BaseModel):
     remote: dict[str, Any] = Field(default_factory=dict)
     native_session_id: str | None = None
     proc_state: ProcState = ProcState.idle_unloaded
-    model: str | None = None
-    effort: str | None = None
+    model: Selection | None = None
+    effort: EffortSelection | None = None
     acp_model_tier: str | None = None
     title: str | None = None
     turns: int = 0
@@ -140,9 +153,9 @@ class Task(BaseModel):
     repo: str | None = None
     ref: str | None = None
     remote: dict[str, Any] = Field(default_factory=dict)
-    model: str | None = None
+    model: Selection | None = None
     model_explicit: bool = Field(default=False, exclude=True)
-    effort: str | None = None
+    effort: EffortSelection | None = None
     observed_model: str | None = None
     observed_effort: str | None = None
     status: TaskStatus = TaskStatus.queued

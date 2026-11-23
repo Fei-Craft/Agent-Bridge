@@ -37,6 +37,18 @@ from agent_bridge.registry import (
 from agent_bridge.transcript import append_event, read_events
 
 
+@pytest.mark.parametrize('field', ['model', 'effort'])
+@pytest.mark.parametrize('value', ['', '--dir=/', 'x y', 'x' * 101, 'x\n', 'x"'])
+async def test_dispatch_rejects_unsafe_selections(bridge_home, tmp_path, field, value):
+    registry = Registry.create(bridge_home)
+    try:
+        with pytest.raises(ValueError, match=field):
+            await registry.dispatch_task('fake', 'hello', cwd=str(tmp_path), **{field: value})
+        assert not registry.tasks
+    finally:
+        await registry.stop()
+
+
 @pytest.mark.asyncio
 async def test_dispatch_records_model_and_effort(bridge_home, tmp_path):
     work = tmp_path / "work"

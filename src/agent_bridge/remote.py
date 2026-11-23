@@ -23,7 +23,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from agent_bridge.api import BridgeService, wait_for_result
-from agent_bridge.models import TERMINAL_STATUSES, Task, iso
+from agent_bridge.models import TERMINAL_STATUSES, Task, iso, validate_selection
 from agent_bridge.secrets import redact
 
 if TYPE_CHECKING:
@@ -79,6 +79,7 @@ class RemoteGateway:
         self._unauthenticated_audit: deque[float] = deque()
         self.workspaces: dict[str, str] = {}
         if self.config.enabled:
+            registry.config.validate_remote_agents()
             for name, path in self.config.remote_workspaces.items():
                 resolved = Path(path).expanduser().resolve(strict=True)
                 if not resolved.is_dir():
@@ -109,7 +110,7 @@ class RemoteGateway:
         self.scopes = {key: scope for key, scope in self.scopes.items() if scope.expires > now and (not scope.revoked or scope.fetch_until > now)}
         raw = 'abr_' + secrets.token_urlsafe(32)
         digest = hashlib.sha256(raw.encode()).hexdigest()
-        ttl = self.config.token_ttl_sec or self.registry.config.get(task.agent).turn_timeout_sec or 86400
+        ttl = self.config.token_ttl_sec
         scope = TokenScope(digest, task.session_id, task.task_id, frozenset(self.config.remote_callable_agents),
             dict(self.workspaces), now + ttl, task.call_depth, max(0, min(3, self.registry.config.hub.max_depth) - task.call_depth),
             self.config.max_calls_per_token)
@@ -157,8 +158,6 @@ class RemoteGateway:
         if (not authorization.startswith('Bearer ') or not re.fullmatch(r'abr_[A-Za-z0-9_-]{43}', raw) or found is None or found.expires <= now
                 or (found.revoked and (not read_only or found.fetch_until <= now))):
             raise Rejected(401, 'invalid or expired token')
-        if self.config.require_cf_access and not request.headers.get('Cf-Access-Jwt-Assertion'):
-            raise Rejected(403, 'Cloudflare Access assertion required')
         now = time.monotonic()
         while found.requests and found.requests[0] <= now - 60:
             found.requests.popleft()
@@ -307,8 +306,13 @@ class RemoteGateway:
             if not isinstance(message, str) or not message.strip() or not isinstance(notify, bool):
                 raise Rejected(400, 'message must be nonempty text; notify_caller must be boolean')
             for key in ('model', 'effort'):
-                if key in body and not isinstance(body[key], str):
-                    raise Rejected(400, key + ' must be text')
+                if key in body:
+                    if not isinstance(body[key], str):
+                        raise Rejected(400, key + ' must be text')
+                    validate_selection(body[key], key)
+                    allowed = getattr(self.registry.config.get(agent), 'remote_allowed_' + ('models' if key == 'model' else 'efforts'))
+                    if body[key] not in allowed:
+                        raise Rejected(400, key + ' is not allowlisted for this remote agent')
             timeout = body.get('timeout_sec')
             if timeout is not None and (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout < 0):
                 raise Rejected(400, 'timeout_sec must be finite and nonnegative')

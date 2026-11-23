@@ -117,6 +117,45 @@ def test_cli_argv_and_missing_options(tmp_path):
         build_cli_argv(cfg, session, task)
 
 
+@pytest.mark.parametrize('prompt_args', [['{prompt}'], ['-p', '{prompt}'], ['--dir={prompt}']])
+def test_cli_rejects_unprotected_prompt_slots(tmp_path, prompt_args):
+    session, task = session_and_task(tmp_path, '--dir=/')
+    with pytest.raises(ValueError, match='prompt must use stdin'):
+        build_cli_argv(configuration(prompt_args=prompt_args), session, task)
+
+
+@pytest.mark.parametrize('stdin', [False, True])
+async def test_option_like_prompt_reaches_cli_as_text(tmp_path, stdin):
+    cfg = configuration(prompt_stdin=stdin, prompt_args=[] if stdin else ['--', '{prompt}'])
+    session, task = session_and_task(tmp_path, '--dir=/')
+    adapter = build_adapter(cfg, tmp_path / 'home')
+    try:
+        result = await adapter.run_turn(session, task)
+        assert json.loads(result.text)['prompt'] == '--dir=/'
+    finally:
+        await adapter.shutdown(session)
+
+
+@pytest.mark.parametrize('preset', ['opencode', 'claude', 'cursor'])
+def test_preset_prompt_transport(tmp_path, monkeypatch, preset):
+    cfg = load_config(tmp_path).get(preset)
+    monkeypatch.setattr('agent_bridge.cli_exec.cli_command', lambda agent: agent.cli.command)
+    session, task = session_and_task(tmp_path, '--dir=/')
+    cmd = build_cli_argv(cfg, session, task)
+    if preset == 'claude':
+        assert cfg.cli.prompt_stdin and task.message not in cmd
+    else:
+        assert cmd[-2:] == ['--', '--dir=/']
+
+
+@pytest.mark.parametrize('field', ['model', 'effort'])
+def test_cli_validates_mutated_selections(tmp_path, field):
+    session, task = session_and_task(tmp_path)
+    setattr(task, field, '--dir=/')
+    with pytest.raises(ValueError, match=field):
+        build_cli_argv(configuration(), session, task)
+
+
 @pytest.mark.asyncio
 async def test_cli_turn_resume_stdin_and_hub_env(tmp_path):
     home = tmp_path / 'home'
