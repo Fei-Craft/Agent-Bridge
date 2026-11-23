@@ -606,9 +606,14 @@ def build_worker_env(
     # the MCP child drops both — that residual is documented in SETUP.md.
     if worker_context:
         for key in ('AGENT_BRIDGE_HUB_URL', 'AGENT_BRIDGE_HUB_TOKEN', 'AGENT_BRIDGE_CALLER_SESSION'):
+            if hub_worker_context.get().get('AGENT_BRIDGE_HUB') == 'off':
+                env.pop(key, None)
+                continue
             value = hub_worker_context.get().get(key) or (base or os.environ).get(key)
             if value:
                 env[key] = value
+        if hub_worker_context.get().get('AGENT_BRIDGE_HUB') == 'off':
+            env['AGENT_BRIDGE_HUB'] = 'off'
         env[WORKER_CONTEXT_ENV] = WORKER_CONTEXT_VALUE
         origin[WORKER_CONTEXT_ENV] = "worker-context"
         # The nested home derives from the registry home, not the env var:

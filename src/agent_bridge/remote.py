@@ -25,10 +25,11 @@ from starlette.routing import Route
 from agent_bridge.api import BridgeService, wait_for_result
 from agent_bridge.models import TERMINAL_STATUSES, Task, iso
 from agent_bridge.secrets import redact
-from agent_bridge.worker_env import hub_worker_context
 
 if TYPE_CHECKING:
     from agent_bridge.registry import Registry
+
+AUDIT_MAX_BYTES = 1024 * 1024
 
 
 @dataclass
@@ -74,6 +75,8 @@ class RemoteGateway:
         self.config = registry.config.hub.remote
         self.scopes: dict[str, TokenScope] = {}
         self.approvals: dict[str, Approval] = {}
+        self._closing = False
+        self._unauthenticated_audit: deque[float] = deque()
         self.workspaces: dict[str, str] = {}
         if self.config.enabled:
             for name, path in self.config.remote_workspaces.items():
@@ -165,6 +168,13 @@ class RemoteGateway:
         return found
 
     def audit(self, request: Request, route: str, scope: TokenScope | None, agent: str | None, workspace: str | None, outcome: str) -> None:
+        if scope is None:
+            now = time.monotonic()
+            while self._unauthenticated_audit and self._unauthenticated_audit[0] <= now - 60:
+                self._unauthenticated_audit.popleft()
+            if len(self._unauthenticated_audit) >= 20:
+                return
+            self._unauthenticated_audit.append(now)
         raw = request.headers.get('authorization', '').removeprefix('Bearer ')
         token_id = scope.digest[:12] if scope else hashlib.sha256(raw.encode()).hexdigest()[:12] if re.fullmatch(r'abr_[A-Za-z0-9_-]{43}', raw) else None
         record = redact({'timestamp': iso(), 'token_id': token_id,
@@ -174,14 +184,20 @@ class RemoteGateway:
             'cf_access_present': bool(request.headers.get('Cf-Access-Jwt-Assertion')),
             'route': route, 'agent': (agent or '')[:100], 'workspace': (workspace or '')[:100], 'outcome': outcome})
         path = self.registry.home / 'remote-audit.jsonl'
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, 'w') as file:
+        encoded = (json.dumps(record, ensure_ascii=False) + '\n').encode('utf-8')
+        if len(encoded) > AUDIT_MAX_BYTES:
+            return
+        if path.exists() and path.stat().st_size + len(encoded) > AUDIT_MAX_BYTES:
             os.chmod(path, 0o600)
-            file.write(json.dumps(record, ensure_ascii=False) + '\n')
+            os.replace(path, path.with_suffix('.jsonl.1'))
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, 'wb') as file:
+            os.chmod(path, 0o600)
+            file.write(encoded)
 
     def list_approvals(self) -> dict:
         return {'ok': True, 'approvals': [redact({'approval_id': item.approval_id, 'cloud_task_id': item.scope.cloud_task_id,
-            'agent': item.agent, 'workspace': item.workspace, 'message': item.message[:1000], 'status': item.status})
+            'agent': item.agent, 'workspace': item.workspace, 'message': item.message, 'status': item.status})
             for item in self.approvals.values() if item.status == 'pending']}
 
     def decide(self, approval_id: str, approve: bool) -> dict:
@@ -192,7 +208,15 @@ class RemoteGateway:
         item.event.set()
         return {'ok': True, 'approval_id': approval_id, 'status': item.status}
 
+    def close(self) -> None:
+        self._closing = True
+        for item in self.approvals.values():
+            if item.status == 'pending':
+                self.decide(item.approval_id, False)
+
     async def approve(self, scope: TokenScope, agent: str, workspace: str, message: str) -> None:
+        if self._closing:
+            raise Rejected(503, 'remote gateway shutting down')
         if not self.config.require_approval:
             return
         item = Approval('approval_' + secrets.token_hex(8), scope, agent, workspace, message)
@@ -302,13 +326,9 @@ class RemoteGateway:
                 await self.approve(scope, agent, workspace, message)
                 if scope.revoked or scope.expires <= time.time():
                     raise Rejected(401, 'token expired while awaiting approval')
-                context = hub_worker_context.set(self.registry.deliveries.worker_context)
-                try:
-                    dispatched = await self.registry.dispatch_task(agent, message, cwd=scope.workspaces[workspace],
-                        notify_caller=notify, caller_session_id=scope.session_id,
-                        model=body.get('model'), effort=body.get('effort'))
-                finally:
-                    hub_worker_context.reset(context)
+                dispatched = await self.registry.dispatch_task(agent, message, cwd=scope.workspaces[workspace],
+                    notify_caller=notify, caller_session_id=scope.session_id, remote_origin=True,
+                    model=body.get('model'), effort=body.get('effort'))
                 scope.owned_tasks.add(dispatched['task_id'])
             finally:
                 scope.reserved -= 1

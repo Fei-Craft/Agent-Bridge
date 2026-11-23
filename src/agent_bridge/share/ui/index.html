@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Agent Bridge · 本地控制台</title>
+  <link rel="stylesheet" href="/ui/style.css"><script src="/ui/app.js" defer></script>
+</head>
+<body>
+  <header><div><span class="brand">AB</span><strong>Agent Bridge</strong><span class="muted">本地控制台</span></div><div><span class="local">仅本机访问</span><button id="logout">退出登录</button></div></header>
+  <nav><button data-page="overview" class="active">任务</button><button data-page="agents-page">Agents</button><button data-page="sessions-page">会话</button><button data-page="dispatch">派发任务</button><button data-page="gateway">网关与审批</button></nav>
+  <main>
+    <p id="notice" role="status">正在连接本地 Hub…</p>
+    <section id="overview" class="page">
+      <div class="heading"><div><p class="eyebrow">WORKSPACE / LOCAL</p><h1>让协作井然有序。</h1><p class="muted">所有代理的工作进展，尽在此处。</p></div><button id="refresh">立即刷新</button></div>
+      <div id="agent-summary" class="agent-summary"></div>
+      <div class="metrics" id="metrics"></div>
+      <div class="heading"><h2>任务</h2><label>筛选 <select id="filter"><option value="">全部状态</option><option value="running">运行中</option><option value="queued">排队中</option><option value="completed">已完成</option><option value="cancelled">已取消</option><option value="failed">失败</option></select></label></div>
+      <div class="table-wrap"><table><thead><tr><th>任务 / 消息</th><th>代理</th><th>状态</th><th>通知 / 回调</th><th>操作</th></tr></thead><tbody id="tasks"></tbody></table></div>
+    </section>
+    <section id="agents-page" class="page" hidden><p class="eyebrow">YOUR TEAM</p><h1>Agents</h1><p class="muted">已配置的代理与本机可用性；可用不代表云端凭据已通过验证。</p><div id="agents" class="agents"></div></section>
+    <section id="sessions-page" class="page" hidden><p class="eyebrow">CONVERSATIONS</p><h1>会话</h1><p class="muted">当前 Hub 管理的代理会话。</p><div id="sessions" class="session-list card"></div></section>
+    <section id="detail" class="page" hidden>
+      <div class="heading"><div><h1>任务详情</h1><p id="detail-id" class="muted"></p></div><button id="back">返回总览</button></div>
+      <div id="detail-meta" class="card"></div>
+      <h2>实时转录 <span class="muted small">轮询更新 · 会话级事件</span></h2><pre id="transcript"></pre><button id="more-transcript" hidden>加载更多转录</button>
+      <h2>任务结果</h2><pre id="result"></pre><button id="more-result" hidden>加载更多结果</button>
+    </section>
+    <section id="dispatch" class="page" hidden>
+      <h1>派发任务</h1><p class="muted">向本地或云端代理发送工作指令。目录白名单不是操作系统沙箱。</p>
+      <form id="dispatch-form" class="card form">
+        <label>代理<select name="agent" id="agent-select" required></select></label>
+        <label>任务消息<textarea name="message" rows="5" required placeholder="描述目标、约束和验收方式"></textarea></label>
+        <div class="columns"><label>模型<input name="model" placeholder="可选，使用代理默认值"></label><label>推理强度<input name="effort" placeholder="可选，例如 high"></label></div>
+        <label>命名工作区<select id="workspace"><option value="">手动输入目录 / 云端无需目录</option></select></label>
+        <label>本地工作目录<input name="cwd" id="cwd" placeholder="绝对路径；云端代理可留空"></label>
+        <label class="check"><input type="checkbox" name="async" checked>异步派发（立即返回任务编号；关闭则等待完成）</label>
+        <p class="muted small">本地控制台可使用管理端目录权限；通知与回调状态在任务列表和详情中查看。</p>
+        <button type="submit" class="primary">派发任务</button><p id="dispatch-status" role="status"></p>
+      </form>
+    </section>
+    <section id="gateway" class="page" hidden>
+      <h1>网关与审批</h1><p class="muted">独立远程网关不提供此界面。绝不要将管理端口暴露到公网。</p>
+      <div id="gateway-status" class="card"></div>
+      <h2>待审批调用</h2><div id="approvals"></div>
+      <h2>最近审计 <span class="muted small">最多 30 条 · 已脱敏</span></h2><pre id="audit"></pre>
+    </section>
+  </main>
+  <footer>Agent Bridge · 无第三方脚本 · 登录凭据仅用于本机会话</footer>
+</body>
+</html>
