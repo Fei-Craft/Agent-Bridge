@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
+import subprocess
+from pathlib import Path
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
 
@@ -17,6 +20,13 @@ from agent_bridge.remote import create_remote_app
 ORIGIN = 'http://127.0.0.1:8765'
 UI = {'X-Agent-Bridge-UI': '1', 'Origin': ORIGIN}
 BEARER = {'Authorization': 'Bearer dashboard-admin-credential'}
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='Node is optional; required only for vanilla JS rendering tests')
+def test_dashboard_rendering():
+    result = subprocess.run(['node', '--test', str(Path(__file__).with_name('dashboard_ui.test.cjs'))],
+        capture_output=True, text=True, timeout=20, encoding='utf-8')
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.fixture
