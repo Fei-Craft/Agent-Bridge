@@ -151,6 +151,30 @@ async def test_generic_acp_selection_through_hub(
         assert not follow_up['warnings']
 
 
+async def test_rejected_generic_acp_model_does_not_poison_follow_up(hub, tmp_path):
+    client, registry = hub
+    registry.config.agents['echo'] = AgentConfig(
+        name='echo', protocol='acp',
+        command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
+        env={'BRIDGE_ECHO_SELECTION': '1'},
+    )
+    path = '/v1/agents/echo/invoke'
+    body = {'message': 'hello', 'cwd': str(tmp_path)}
+    first = (await client.post(path, json={**body, 'model': 'family-xhigh'})).json()
+    assert first['status'] == 'completed'
+    body['session_id'] = first['session_id']
+    rejected = (await client.post(path, json={**body, 'model': 'unknown-model'})).json()
+    assert rejected['status'] == 'failed'
+    assert rejected['model'] == 'unknown-model'
+    assert "rejected model 'unknown-model'" in rejected['error']
+    follow_up = (await client.post(path, json=body)).json()
+    assert follow_up['status'] == 'completed'
+    assert follow_up['result_text'] == 'echo:hello'
+    assert follow_up['model'] == 'family-xhigh'
+    assert follow_up['observed_model'] == 'family'
+    assert follow_up['observed_effort'] == 'xhigh'
+
+
 async def test_generic_acp_selection_warns_when_not_advertised(hub, tmp_path):
     client, registry = hub
     registry.config.agents['echo'] = AgentConfig(

@@ -15,7 +15,7 @@ from typing import Any, Literal
 import psutil
 
 from agent_bridge.adapters import build_adapter
-from agent_bridge.adapters.acp import AcpError
+from agent_bridge.adapters.acp import AcpError, uses_generic_acp_selection
 from agent_bridge.adapters.base import Adapter
 from agent_bridge.adapters.cloud import CloudAdapter
 from agent_bridge.config import (
@@ -758,6 +758,7 @@ class Registry:
                 raise ValueError("request_id must be a UUID") from None
         agent_cfg = self.config.get(agent)
         cloud = agent_cfg.protocol == 'cloud'
+        generic_acp = uses_generic_acp_selection(agent_cfg)
         if not cloud and not cwd:
             raise ValueError('cwd is required for local agents')
         cwd_path = Path(cwd or '.')
@@ -822,14 +823,14 @@ class Registry:
                     cwd=resolved_cwd,
                     repo=repo if repo is not None else (agent_cfg.cloud.repo if agent_cfg.cloud else None),
                     ref=ref if ref is not None else (agent_cfg.cloud.ref if agent_cfg.cloud else None),
-                    model=model,
+                    model=None if generic_acp else model,
                     effort=effort,
                     title=title,
                     proc_state=ProcState.spawning,
                 )
                 self._stamp_owner(session)
                 self.sessions[session.session_id] = session
-            if model:
+            if model and not generic_acp:
                 session.model = model
             if effort:
                 session.effort = effort
@@ -895,7 +896,7 @@ class Registry:
             "task_id": task.task_id,
             "session_id": session.session_id,
             "agent": agent,
-            "model": session.model,
+            "model": task.model,
             "effort": session.effort,
             "persisted": persisted,
             **({"request_id": request_id, "reused": False} if request_id is not None else {}),
