@@ -184,6 +184,15 @@ async def test_mcp_proxy_honors_manual_host_mode(hub, monkeypatch, tmp_path):
         assert (await backend.call('list_agents'))['coordinator']['mode'] == 'manual'
         accepted = await backend.call('dispatch_task', agent='fake', message='requested', cwd=str(tmp_path), user_requested=True)
         assert accepted['ok'] is True
+        assert not (await backend.call('set_preferences', mode='invalid'))['ok']
+        assert backend.manual_mode
+        changed = await backend.call('set_preferences', mode='auto')
+        assert changed['ok'] and not backend.manual_mode
+        assert (await backend.call('list_agents'))['coordinator']['mode'] == 'auto'
+        automatic = await backend.call('dispatch_task', agent='fake', message='automatic', cwd=str(tmp_path))
+        assert automatic['ok']
+        assert (await backend.call('set_preferences', mode='manual'))['ok']
+        assert not (await backend.call('dispatch_task', agent='fake', message='blocked again', cwd=str(tmp_path)))['ok']
 
 
 async def test_client_errors():
