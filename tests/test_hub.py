@@ -188,10 +188,15 @@ async def test_mcp_proxy_honors_manual_host_mode(hub, monkeypatch, tmp_path):
         assert backend.host_manual_mode
         changed = await backend.call('set_preferences', mode='auto')
         assert changed['ok'] and backend.host_manual_mode
-        assert (await backend.call('list_agents'))['coordinator']['mode'] == 'manual'
+        assert changed['coordinator']['mode'] == 'manual'
+        assert changed['coordinator']['hub_mode'] == 'auto'
+        listed = (await backend.call('list_agents'))['coordinator']
+        assert listed['mode'] == 'manual' and listed['hub_mode'] == 'auto'
         automatic = await backend.call('dispatch_task', agent='fake', message='automatic', cwd=str(tmp_path))
         assert not automatic['ok']
-        assert (await backend.call('set_preferences', mode='manual'))['ok']
+        changed = await backend.call('set_preferences', mode='manual')
+        assert changed['ok'] and changed['coordinator']['mode'] == 'manual'
+        assert changed['coordinator']['hub_mode'] == 'manual'
         assert not (await backend.call('dispatch_task', agent='fake', message='blocked again', cwd=str(tmp_path)))['ok']
 
 
@@ -204,7 +209,9 @@ async def test_mcp_proxies_follow_current_shared_preferences(hub, monkeypatch, t
         assert (await first.call('set_preferences', mode='manual'))['ok']
         assert (await first.call('list_agents'))['coordinator']['mode'] == 'manual'
         assert not (await first.call('dispatch_task', agent='fake', message='blocked', cwd=str(tmp_path)))['ok']
-        assert (await second.call('set_preferences', mode='auto'))['ok']
+        changed = await second.call('set_preferences', mode='auto')
+        assert changed['ok'] and changed['coordinator']['mode'] == 'auto'
+        assert 'hub_mode' not in changed['coordinator']
         assert (await first.call('list_agents'))['coordinator']['mode'] == 'auto'
         invoked = await first.call('invoke', agent='fake', message='automatic', cwd=str(tmp_path), timeout_sec=5)
         assert invoked['ok'] and invoked['status'] == 'completed'
