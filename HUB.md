@@ -115,6 +115,55 @@ not malicious token holders. Never share tokens. Worker outputs are untrusted.
 Non-loopback bind requires `--allow-remote`; HTTP is not encrypted, so use a
 trusted TLS tunnel and firewall rather than exposing it to the Internet.
 
+## Blocking calls and async push-back
+
+`invoke` (REST `/v1/agents/{agent}/invoke` or `call invoke`) and `ask` now wait
+until terminal by default, without the old 180-second cap. Explicit
+`timeout_sec` / `ask --timeout SEC` returns a running task ID without cancelling.
+Worker stall/turn limits still apply. HubClient/CLI use repeated bounded waits
+with unbounded HTTP read timeouts; direct REST invoke streams JSON whitespace
+keepalives every 15 seconds before the final JSON object. Configure reverse
+proxies to allow long streaming responses. `ask` prints the started task ID to
+stderr; Ctrl-C stops waiting, not the worker, and prints how to fetch its result.
+
+MCP `invoke_agent` waits with periodic progress notifications. Use it when the
+result is needed like a tool result. Some clients impose absolute tool-duration
+limits despite progress: then use `dispatch_task` and async notification, or
+bounded `wait_task` polling. A top-level coordinator without a worker session
+cannot receive automatic follow-up turns; use callbacks or polling instead.
+
+```sh
+agent-bridge ask codex 'Review the project' --cwd /absolute/project
+# Inside a hub worker: defaults notify_caller=true, prints task ID immediately.
+agent-bridge ask codex 'Research this issue' --cwd /absolute/project --async
+agent-bridge ask codex 'Review' --cwd /absolute/project --async --callback-url https://trusted.example/result
+```
+
+REST/MCP `dispatch_task` accepts `notify_caller`, `callback_url`, and optional
+`callback_secret`. The caller is identified by `X-Agent-Bridge-Caller` (set from
+`AGENT_BRIDGE_CALLER_SESSION` by the CLI/proxy); `notify_caller=true` without a
+valid hub caller is rejected. Results become concise follow-up turns in that
+caller session, queued while busy, in dispatch order. They include agent/task
+IDs, status, result preview, files/remote PRs and fetch instructions. Delivery
+turns do not increase call depth; calls made during delivery turns cannot
+request further notifications/callbacks, preventing automatic notification loops.
+
+Callbacks POST the first-page `get_result` JSON (including `ok:true`) to a trusted
+HTTP(S) endpoint, without redirects. With a secret, verify
+`X-Agent-Bridge-Signature: sha256=HEX` as HMAC-SHA256 over the **raw request body**.
+`X-Agent-Bridge-Task-Id` identifies the source. Four attempts use exponential
+backoff (1, 2, 4 seconds); `callback_delivery` records attempts/status/error in
+`check_task` / `get_result`. `caller_delivery` records follow-up task ID/status.
+Callbacks are at-least-once: receivers must deduplicate by task ID. Caller turns
+use persisted task-ID receipts, also surviving a lost acknowledgment/restart.
+Pending deliveries survive restart, including `bridge_restarted` failures;
+delivery means the follow-up was submitted, not that its model turn succeeded.
+An ended/missing caller records a delivery failure. Callback secrets are stored
+only in owner-readable `callback-secrets/` files for retries, never in task
+results/logs/state JSON; they are removed after success or task pruning.
+Do not put secrets in URLs. Callback destinations are trusted configuration:
+the hub can reach local/private HTTP endpoints; do not accept untrusted URLs.
+
 ## Cloud API workers
 
 Cloud workers run alongside local ACP/CLI workers; they do not need a local CLI

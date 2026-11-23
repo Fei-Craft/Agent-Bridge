@@ -26,6 +26,33 @@ hub.json 的 PID 与健康接口。`AGENT_BRIDGE_HUB=off` 可禁用发现。
 远程监听必须显式使用 `--allow-remote`。这是可信本机用户的接口，不是沙箱；
 持有 token 即可操作所有 session、启动 CLI。不要暴露到公网，远程使用需 TLS 隧道与防火墙。
 
+## 阻塞调用与异步回推
+
+`invoke` / `ask` 默认等到终态，不再有 180 秒上限；显式 `timeout_sec` /
+`--timeout` 只限制等待，超时返回运行中的 task ID，不取消任务。CLI/HubClient
+分段等待，HTTP 读取不限时；直接 REST invoke 每 15 秒发送 JSON 空白保活，
+最终返回完整 JSON 对象。反向代理也需允许长连接。ask 启动时打印 task ID，
+Ctrl-C 仅停止等待，并打印取结果命令。Worker 的 stall/turn 限制仍生效。
+
+需要像工具一样直接拿结果时用 MCP `invoke_agent`，会周期发送 progress。
+部分客户端即便收到 progress 也有工具总时限，此时用异步 dispatch 或分段 wait。
+Worker 中 `ask --async` 默认 notify_caller=true，立即返回 task ID。
+REST/MCP dispatch 支持 `notify_caller`、`callback_url` 和可选 `callback_secret`。
+没有 Hub worker caller session 的 notify_caller 会明确拒绝；顶层协调器可用回调或轮询。
+
+回推会在 caller 空闲后按 dispatch 顺序作为新一轮消息交付，包含 callee/task/status、
+结果预览、files/PR 与继续获取方式。回推轮不增加调用深度，且其发起的调用不会再触发
+通知或回调，避免自动循环。持久化 task-ID receipt 去重；pending 通知重启后继续，
+包括 bridge_restarted 失败。交付表示已提交新一轮，不保证模型处理成功；已结束的 caller
+记录失败。check_task/get_result 暴露 caller_delivery 和 callback_delivery。
+
+回调 POST get_result 第一页 JSON（含 ok:true），最多四次，指数退避 1/2/4 秒。
+有 secret 时 X-Agent-Bridge-Signature 为 `sha256=HEX`，校验原始 body 的
+HMAC-SHA256；X-Agent-Bridge-Task-Id 为去重键。回调至少一次，请按 task ID 去重。
+secret 仅存在权限 0600 的 callback-secrets/ 文件，用于重启重试，不进入 state JSON、
+结果或日志；成功或 task 清理后删除。不跟随重定向，仅可信 HTTP(S) 地址，禁止 URL
+内嵌密码；Hub 能访问内网端点，不应接受不可信来源提供的 callback URL。
+
 ## 云端 API worker
 
 支持 Cursor v1 和 Devin v3，与本地 ACP/CLI 并存，无需本地 CLI 或 cwd。

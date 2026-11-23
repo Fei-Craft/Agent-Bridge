@@ -17,7 +17,11 @@
 
 Run `agent-bridge serve` once; coordinator MCP instances auto-proxy to its shared
 Registry. Any shell-capable agent can call peers with `agent-bridge ask` or
-`agent-bridge call`. See [Hub setup, REST API and security](HUB.md).
+`agent-bridge call`. `ask` / `invoke` wait until done by default; use explicit
+`--timeout` to bound waiting. MCP `invoke_agent` sends progress while waiting.
+For parallel work use `ask --async` inside a worker (automatic result follow-up),
+or dispatch with a signed HTTP callback. Some MCP clients cap tool duration:
+use async/polling then. See [Hub setup, REST API and security](HUB.md).
 
 Cloud workers are also supported: Cursor Cloud (v1) and Devin (v3), configured
 with `protocol = "cloud"`, environment-only API keys, and repository URLs instead
@@ -126,6 +130,7 @@ Close coordinators that are holding Bridge, then `agent-bridge upgrade`, then re
 | `list_agents` | Probe workers, report remaining quota, proxy/env + coordinator policy |
 | `set_preferences` | Persist coordinator mode / routing preferences |
 | `dispatch_task` | Start or resume a turn in the project `cwd` |
+| `invoke_agent` | Call a worker until done, with MCP progress (optional timeout) |
 | `wait_task` | Block up to `timeout_sec` (default 180) |
 | `check_task` | Non-blocking status |
 | `get_result` | Complete final result in pages + changed files |
@@ -192,6 +197,9 @@ uv run pytest
 
 先启动 `agent-bridge serve`，协调器 MCP 会自动代理到共享 Registry。
 任何支持 shell 的 agent 都能用 `agent-bridge ask` / `call` 调用同伴。
+ask/invoke 默认等到结束；--timeout 可限制等待。MCP invoke_agent 会发送进度。
+并行任务用 worker 内 ask --async 自动回推，或 dispatch 配置签名 HTTP 回调。
+部分 MCP 客户端有工具总时限，此时使用异步或轮询。
 参见 [Hub 配置与安全说明](HUB.zh-CN.md)。
 
 也支持 Cursor Cloud v1 / Devin v3 云端 API worker：`protocol = "cloud"`，
@@ -298,6 +306,7 @@ revivable = true
 | `list_agents` | 探测 worker，报告剩余额度、代理 / 环境 + 协调者策略 |
 | `set_preferences` | 持久化协调者模式 / 路由偏好 |
 | `dispatch_task` | 在项目 `cwd` 里开始或续上一次回合 |
+| `invoke_agent` | 等到 worker 结束并发送 MCP 进度，可显式设置超时 |
 | `wait_task` | 最多等待 `timeout_sec`（默认 180） |
 | `check_task` | 非阻塞状态查询 |
 | `get_result` | 分页读取完整结果 + 改过的文件 |
