@@ -1507,14 +1507,14 @@ class Registry:
             try:
                 await asyncio.wait_for(event.wait(), timeout=timeout_sec)
             except TimeoutError:
-                return {"timed_out": True, **self._task_snapshot(self.tasks[task_id])}
+                return redact({"timed_out": True, **self._task_snapshot(self.tasks[task_id])})
         # A terminal answer must also be on disk, not merely queued
         # behind the background flusher.
-        return {
+        return redact({
             "timed_out": False,
             "persisted": (await self._persisted(task)) is True,
             **self._task_snapshot(self.tasks[task_id], include_result=True),
-        }
+        })
 
     async def check_task(self, task_id: str) -> dict:
         task = self._require_task(task_id, allow_disk=True)

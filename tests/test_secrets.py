@@ -111,6 +111,19 @@ def test_escaped_secret_redaction(tmp_path):
     assert json.loads(path.read_text()) == {'value': '[REDACTED]'}
 
 
+async def test_wait_preview_redacts_in_memory_credentials(bridge_home, tmp_path):
+    credential = secrets.remember('private-wait-result-credential')
+    registry = Registry.create(bridge_home)
+    await registry.start()
+    try:
+        task = await registry.dispatch_task('fake', credential, cwd=str(tmp_path))
+        result = await registry.wait_task(task['task_id'], timeout_sec=5)
+        assert credential not in json.dumps(result)
+        assert '[REDACTED]' in result['result_text']
+    finally:
+        await registry.stop()
+
+
 def test_no_echo_fallback(monkeypatch):
     def insecure(prompt):
         warnings.warn('no secure terminal', secrets.getpass.GetPassWarning, stacklevel=1)
