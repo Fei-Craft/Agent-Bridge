@@ -141,6 +141,22 @@ async def test_ui_task_flow_and_redacted_audit(dashboard, tmp_path):
     assert (await client.get('/v1/agents', headers=UI)).json()['agents'][0]['protocol'] == 'fake'
 
 
+async def test_dashboard_workspace_paths_are_canonical(dashboard, tmp_path, monkeypatch):
+    client, _, registry = dashboard
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    project = tmp_path / 'project'
+    project.mkdir()
+    registry.config.hub.remote.remote_workspaces = {'project': '~/project/../project'}
+    await login(client)
+    workspaces = (await client.get('/ui/data', headers=UI)).json()['remote']['workspaces']
+    assert workspaces == {'project': str(project.resolve())}
+    response = await client.post('/v1/tasks', headers=UI, json={
+        'agent': 'fake', 'message': 'operator request', 'cwd': workspaces['project'], 'user_requested': True})
+    assert response.status_code == 200
+    assert registry.tasks[response.json()['task_id']].cwd == str(project.resolve())
+
+
 @pytest.mark.parametrize('route', ['/v1/tasks', '/v1/agents/fake/invoke'])
 async def test_explicit_dashboard_dispatch_in_manual_mode(dashboard, tmp_path, route):
     client, _, registry = dashboard
