@@ -192,6 +192,9 @@ class Registry:
         self._quota_cache = QuotaCache(config.quota.cache_sec)
         self._stopping = False
         self.deliveries = Deliveries(self)
+        from agent_bridge.remote import RemoteGateway
+
+        self.remote = RemoteGateway(self)
         self._pending_state: dict[str, list[dict]] | None = None
         self._pending_gen = 0
         self._flush_task: asyncio.Task[None] | None = None
@@ -728,6 +731,13 @@ class Registry:
         if not self.dispatch_enabled:
             raise RuntimeError(NESTED_DISPATCH_ERROR)
         caller_task = self._busy_task(caller_session_id) if caller_session_id else None
+        if caller_session_id and caller_session_id not in self.sessions:
+            raise ValueError('unknown caller session')
+        if caller_session_id and session_id == caller_session_id:
+            raise ValueError('cannot dispatch into caller session')
+        depth = self.sessions[caller_session_id].call_depth + 1 if caller_session_id else 0
+        if not notification_source_task_id and depth > min(3, self.config.hub.max_depth):
+            raise ValueError('hub max_depth exceeded')
         if caller_task and caller_task.notification_source_task_id:
             notify_caller, callback_url, callback_secret = False, None, None
         validate_callback(callback_url, callback_secret)
@@ -806,6 +816,7 @@ class Registry:
                     )
             else:
                 session = Session(
+                    call_depth=depth,
                     session_id=_new_id("sess"),
                     agent=agent,
                     cwd=resolved_cwd,
@@ -827,7 +838,10 @@ class Registry:
             if session_id is None:
                 session.cwd = resolved_cwd
             session.last_active_at = iso()
+            if caller_session_id:
+                session.call_depth = depth
             task = Task(
+                call_depth=session.call_depth,
                 task_id=_new_id("task"),
                 session_id=session.session_id,
                 agent=agent,
@@ -916,7 +930,11 @@ class Registry:
                 if limit > 0 or turn_cap > 0
                 else None
             )
-            result = await adapter.run_turn(session, task)
+            turn_task = task
+            if isinstance(adapter, CloudAdapter) and self.config.hub.remote.enabled:
+                _, instructions = self.remote.issue(task)
+                turn_task = task.model_copy(update={'message': task.message + instructions})
+            result = await adapter.run_turn(session, turn_task)
             task.remote.update(result.remote)
             if result.native_session_id:
                 session.native_session_id = result.native_session_id
@@ -996,6 +1014,7 @@ class Registry:
                     task.failure = exc.failure if isinstance(exc, AcpError) else None
                     task.stop_reason = "error"
         finally:
+            self.remote.finish(task_id)
             self._cancel_requested.discard(task_id)
             if watch is not None:
                 watch.cancel()

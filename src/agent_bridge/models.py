@@ -122,6 +122,7 @@ class TaskFailure(BaseModel):
 
 
 class Task(BaseModel):
+    call_depth: int = 0
     caller_session_id: str | None = None
     notify_caller: bool = False
     callback_url: str | None = None

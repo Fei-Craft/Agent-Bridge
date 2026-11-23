@@ -14,6 +14,11 @@ from agent_bridge.secrets import get, hub_key, remember
 
 # tool: (HTTP method, path, path argument)
 ROUTES = {
+    'list_approvals': ('GET', '/v1/approvals', None),
+    'approve_approval': ('POST', '/v1/approvals/{approval_id}/approve', 'approval_id'),
+    'deny_approval': ('POST', '/v1/approvals/{approval_id}/deny', 'approval_id'),
+    'set_remote_public_url': ('PUT', '/v1/remote/public-url', None),
+    'get_remote_status': ('GET', '/v1/remote', None),
     'list_agents': ('GET', '/v1/agents', None),
     'set_preferences': ('PUT', '/v1/preferences', None),
     'dispatch_task': ('POST', '/v1/tasks', None),

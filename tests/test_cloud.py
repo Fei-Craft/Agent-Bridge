@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,12 +15,53 @@ from pydantic import ValidationError
 
 from agent_bridge import cli, server
 from agent_bridge.adapters.cloud import CloudAdapter
-from agent_bridge.config import AgentConfig, CloudConfig, load_config
+from agent_bridge.config import AgentConfig, CloudConfig, RemoteConfig, load_config
 from agent_bridge.hub import create_app
 from agent_bridge.models import TaskStatus
 from agent_bridge.probes import probe_agent
 from agent_bridge.registry import Registry
+from agent_bridge.remote import RemoteGateway, create_remote_app
 from agent_bridge.transcript import flush_pending
+
+
+@pytest.mark.parametrize('name', ['cursor', 'devin'])
+async def test_remote_peer_notify_back_to_cloud(cloud_registry, provider, tmp_path, monkeypatch, name):
+    registry = cloud_registry
+    await registry.deliveries.stop()
+    registry.config.hub.remote = RemoteConfig(enabled=True, public_url='http://127.0.0.1:8766',
+        remote_callable_agents=['fake'], remote_workspaces={'project': str(tmp_path)})
+    registry.remote = RemoteGateway(registry)
+    handler = provider[1]
+    handler.cursor_status, handler.detail = 'RUNNING', 'working'
+    ready = progress_event(monkeypatch, lambda task: bool(task.remote.get('agent_id') or task.remote.get('session_id')))
+    root = await registry.dispatch_task(name, 'call a local tool')
+    await asyncio.wait_for(ready.wait(), 5)
+    prompt = next(body for method, path, body in handler.requests if method == 'POST')
+    token = re.search(r'abr_[A-Za-z0-9_-]{43}', json.dumps(prompt))[0]
+    async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=create_remote_app(registry.remote)),
+        base_url='http://gateway', headers={'Authorization': 'Bearer ' + token}) as client:
+        remote = (await client.post('/v1/tasks', json={'agent': 'fake', 'message': 'LOCAL_PEER_RESULT',
+            'workspace': 'project', 'notify_caller': True})).json()
+        assert remote['ok']
+        await registry.wait_task(remote['task_id'], timeout_sec=5)
+        await registry.deliveries.tick()
+        assert registry.tasks[remote['task_id']].caller_delivery['status'] == 'pending'
+        handler.cursor_status, handler.detail = 'FINISHED', 'finished'
+        await registry.wait_task(root['task_id'], timeout_sec=5)
+        await registry.deliveries.tick()
+        delivered = registry.tasks[remote['task_id']].caller_delivery
+        assert delivered['status'] == 'delivered'
+        await registry.wait_task(delivered['task_id'], timeout_sec=5)
+        followups = [body for method, path, body in handler.requests
+            if method == 'POST' and path.endswith('/messages' if name == 'devin' else '/runs')]
+        assert len(followups) == 1 and 'LOCAL_PEER_RESULT' in json.dumps(followups[0])
+        assert registry.tasks[delivered['task_id']].session_id == root['session_id']
+        assert (await client.post('/v1/tasks', json={'agent': 'fake', 'workspace': 'project', 'message': 'too late'})).status_code == 401
+    await registry.flush_state()
+    flush_pending(registry.home)
+    for path in registry.home.rglob('*'):
+        if path.is_file():
+            assert token.encode() not in path.read_bytes(), path
 
 
 class Provider(BaseHTTPRequestHandler):

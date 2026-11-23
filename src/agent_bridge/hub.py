@@ -5,8 +5,10 @@ import ipaddress
 import json
 import os
 import secrets
+import signal
 import tempfile
-from contextlib import asynccontextmanager
+from collections.abc import Iterator
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
@@ -21,8 +23,15 @@ from agent_bridge.api import BridgeService, _error, wait_for_result
 from agent_bridge.hub_client import ROUTES
 from agent_bridge.paths import ensure_home
 from agent_bridge.registry import Registry
+from agent_bridge.remote import create_remote_app
 from agent_bridge.secrets import delete, hub_key, remember, set_secret
 from agent_bridge.worker_env import caller_session_context, hub_worker_context
+
+
+class _EmbeddedServer(uvicorn.Server):
+    @contextmanager
+    def capture_signals(self) -> Iterator[None]:
+        yield
 
 
 def validate_host(host: str, allow_remote: bool = False) -> None:
@@ -114,6 +123,18 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                 depth_context = call_depth.set(depth)
                 caller_context = caller_session_context.set(caller)
                 try:
+                    if tool in {'list_approvals', 'approve_approval', 'deny_approval', 'set_remote_public_url', 'get_remote_status'}:
+                        if tool == 'list_approvals':
+                            result = registry.remote.list_approvals()
+                        elif tool == 'get_remote_status':
+                            remote = registry.config.hub.remote
+                            result = {'ok': True, 'enabled': remote.enabled, 'host': remote.host,
+                                'port': remote.port, 'public_url': remote.public_url}
+                        elif tool == 'set_remote_public_url':
+                            result = registry.remote.set_public_url(**args)
+                        else:
+                            result = registry.remote.decide(args['approval_id'], tool == 'approve_approval')
+                        return JSONResponse(result)
                     if tool == 'invoke':
                         timeout = args.pop('timeout_sec', None)
                         if timeout is not None and timeout < 0:
@@ -158,7 +179,41 @@ def serve(host: str | None = None, port: int | None = None, allow_remote: bool =
     registry = Registry.create(runtime_context='coordinator')
     host = host or registry.config.hub.host
     port = port if port is not None else registry.config.hub.port
-    validate_host(host, allow_remote)
+    validate_host(host, allow_remote and not registry.config.hub.remote.enabled)
+    if registry.config.hub.remote.enabled and registry.config.hub.remote.port == port:
+        raise ValueError('remote gateway and admin must use separate ports')
+    registry.config.hub.port = port
     url_host = f'[{host}]' if ':' in host else host
     app = create_app(registry, url=f'http://{url_host}:{port}')
-    uvicorn.run(app, host=host, port=port)
+    if not registry.config.hub.remote.enabled:
+        uvicorn.run(app, host=host, port=port)
+        return
+
+    async def run():
+        remote = registry.config.hub.remote
+        admin_server = _EmbeddedServer(uvicorn.Config(app, host=host, port=port, lifespan='off', access_log=False, proxy_headers=False))
+        gateway_server = _EmbeddedServer(uvicorn.Config(create_remote_app(registry.remote),
+            host=remote.host, port=remote.port, lifespan='off', access_log=False, proxy_headers=False))
+        stopping = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def stop(*_):
+            loop.call_soon_threadsafe(stopping.set)
+
+        handlers = {sig: signal.signal(sig, stop) for sig in (signal.SIGINT, signal.SIGTERM)}
+        try:
+            async with app.router.lifespan_context(app):
+                running = {asyncio.create_task(admin_server.serve()), asyncio.create_task(gateway_server.serve())}
+                stopped = asyncio.create_task(stopping.wait())
+                try:
+                    await asyncio.wait({*running, stopped}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    admin_server.should_exit = gateway_server.should_exit = True
+                    await asyncio.gather(*running)
+                    stopped.cancel()
+                    await asyncio.gather(stopped, return_exceptions=True)
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+
+    asyncio.run(run())

@@ -44,6 +44,9 @@ Usage:
   agent-bridge install-skill   copy the coordinator skill into host skill dirs
   agent-bridge help            this text
   agent-bridge serve [--host HOST] [--port PORT] [--allow-remote]
+  agent-bridge secrets set|delete cursor|devin; agent-bridge secrets list
+  agent-bridge approvals list|approve ID|deny ID
+  agent-bridge tunnel [--name NAME] [--public-url HTTPS_ORIGIN]
   agent-bridge call TOOL [--key value ...]   call a running hub (JSON output)
   agent-bridge ask AGENT MESSAGE [--cwd DIR] [--repo URL] [--ref REF] [--session-id ID] [--timeout SEC] [--model MODEL] [--effort EFFORT] [--async] [--notify-caller] [--callback-url URL] [--callback-secret]
 
@@ -318,6 +321,43 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
 
     command = args[0]
+    if command in {'approvals', 'tunnel'}:
+        import asyncio
+
+        from agent_bridge.hub_client import discover
+        from agent_bridge.tunnel import run_tunnel
+
+        parser = argparse.ArgumentParser(prog='agent-bridge ' + command)
+        if command == 'approvals':
+            parser.add_argument('action', choices=['list', 'approve', 'deny'])
+            parser.add_argument('approval_id', nargs='?')
+        else:
+            parser.add_argument('--name')
+            parser.add_argument('--public-url')
+        options = parser.parse_args(args[1:])
+
+        async def remote_control():
+            client = await discover()
+            if client is None:
+                raise RuntimeError('no authenticated running hub discovered')
+            if command == 'tunnel':
+                await run_tunnel(client, name=options.name, public_url=options.public_url)
+                return
+            if options.action == 'list':
+                result = await client.call('list_approvals')
+            elif not options.approval_id:
+                parser.error('approve/deny requires an approval id')
+            else:
+                result = await client.call(options.action + '_approval', approval_id=options.approval_id)
+            print(json.dumps(result, ensure_ascii=False))
+            if not result.get('ok'):
+                raise SystemExit(1)
+
+        try:
+            asyncio.run(remote_control())
+        except KeyboardInterrupt:
+            raise SystemExit(130) from None
+        return
     if command == 'secrets':
         parser = argparse.ArgumentParser(prog='agent-bridge secrets')
         parser.add_argument('action', choices=['set', 'list', 'delete'])

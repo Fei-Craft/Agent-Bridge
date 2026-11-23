@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -264,10 +265,51 @@ class CoordinatorConfig(BaseModel):
     instructions: str = ""
 
 
+class RemoteConfig(BaseModel):
+    enabled: bool = False
+    host: str = '127.0.0.1'
+    port: int = Field(default=8766, ge=1, le=65535)
+    remote_callable_agents: list[str] = Field(default_factory=list)
+    remote_workspaces: dict[str, str] = Field(default_factory=dict)
+    token_ttl_sec: float | None = Field(default=None, gt=0)
+    result_fetch_grace_sec: float = Field(default=30, ge=0, le=300)
+    max_calls_per_token: int = Field(default=16, ge=1)
+    max_concurrent_per_token: int = Field(default=2, ge=1)
+    rate_limit_per_min: int = Field(default=60, ge=1)
+    max_body_bytes: int = Field(default=65536, ge=1)
+    require_approval: bool = False
+    public_url: str = ''
+    access_note: str = ''
+    require_cf_access: bool = False
+
+    @model_validator(mode='after')
+    def validate_remote(self) -> RemoteConfig:
+        if self.host == 'localhost':
+            self.host = '127.0.0.1'
+        try:
+            if not ipaddress.ip_address(self.host).is_loopback:
+                raise ValueError('remote gateway must bind a loopback address')
+        except ValueError:
+            raise ValueError('remote gateway must bind a loopback address') from None
+        for name, path in self.remote_workspaces.items():
+            if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', name):
+                raise ValueError('remote workspace names must be simple names, never paths')
+            if not Path(path).expanduser().is_absolute():
+                raise ValueError('remote workspace paths must be absolute')
+        return self
+
+
 class HubConfig(BaseModel):
     host: str = '127.0.0.1'
     port: int = Field(default=8765, ge=1, le=65535)
     max_depth: int = Field(default=3, ge=0)
+    remote: RemoteConfig = Field(default_factory=RemoteConfig)
+
+    @model_validator(mode='after')
+    def separate_remote_port(self) -> HubConfig:
+        if self.remote.enabled and self.remote.port == self.port:
+            raise ValueError('remote gateway and admin must use separate ports')
+        return self
 
 
 class AppConfig(BaseModel):
