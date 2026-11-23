@@ -12,7 +12,7 @@ from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from agent_bridge.config import DEFAULT_INHERIT_KEYS, EnvConfig
+from agent_bridge.config import DEFAULT_INHERIT_KEYS, EnvConfig, normalize_dsh_permission_mode
 from agent_bridge.paths import (
     WORKER_CONTEXT_ENV,
     WORKER_CONTEXT_VALUE,
@@ -624,6 +624,8 @@ def build_worker_env(
         # worker's nested Bridge to a different directory (G2).
         env["AGENT_BRIDGE_HOME"] = str(nested_bridge_home(home) if home is not None else nested_bridge_home(bridge_home()))
         origin["AGENT_BRIDGE_HOME"] = "worker-context"
+    if 'DSH_PERMISSION_MODE' in env:
+        env['DSH_PERMISSION_MODE'] = normalize_dsh_permission_mode(env['DSH_PERMISSION_MODE'])
     if log_fill:
         status = describe_env(config, env=env, origin=origin)
         log.info("worker environment: %s", format_env_status(status))
