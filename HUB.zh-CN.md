@@ -80,11 +80,15 @@ REST/MCP dispatch 支持 `notify_caller`、`callback_url` 和可选 `callback_se
 记录失败。check_task/get_result 暴露 caller_delivery 和 callback_delivery。
 
 回调 POST get_result 第一页 JSON（含 ok:true），最多四次，指数退避 1/2/4 秒。
-有 secret 时 X-Agent-Bridge-Signature 为 `sha256=HEX`，校验原始 body 的
-HMAC-SHA256；X-Agent-Bridge-Task-Id 为去重键。回调至少一次，请按 task ID 去重。
+有 secret 时 X-Agent-Bridge-Signature 为 `sha256=HEX`，HMAC-SHA256 输入为
+`timestamp + "." + task_id + "." + 原始body字节`（前缀 UTF-8）。
+读取 X-Agent-Bridge-Timestamp（Unix 秒）和 X-Agent-Bridge-Task；验证端拒绝超过
+300 秒时钟偏差，再校验签名。回调至少一次，请按 task ID 去重。
 secret 按 task 存在 OS keyring 中（不可用时仅内存），不进入 state JSON、
-结果或日志；最终投递成功/失败或 task 清理后删除。不跟随重定向，仅可信 HTTP(S) 地址，禁止 URL
-内嵌密码；Hub 能访问内网端点，不应接受不可信来源提供的 callback URL。
+结果或日志；最终投递成功/失败或 task 清理后删除。不跟随重定向，仅允许公网 HTTPS。
+dispatch 和每次发送都解析 DNS，拒绝私网、回环、链路本地、多播、保留和未指定地址，
+连接固定到验证后的 IP，保留原 Host 和 TLS SNI/证书主机名，防止 DNS 重绑定。
+仅 `[hub] allow_insecure_callbacks = true` 可额外允许回环 HTTP/HTTPS，供本地开发。
 
 ## 云端 API worker
 
@@ -189,4 +193,4 @@ quick tunnel 本身不等于 Access。禁止任何 ingress catch-all 指向管�
 
 白名单工作目录不是 OS 沙箱：本地 agent 的工具仍拥有宿主用户权限。为防云端提示注入，
 使用专用 OS 账户/容器、最小可信 agent 和独立 worktree，开启本机审批，不接触敏感文件。
-远程禁止 callback URL 防止 SSRF；管理端回调仍能访问内网，只接受可信配置。
+远程禁止 callback URL 防止 SSRF；管理端仅允许公网 HTTPS（或显式启用的回环回调）。

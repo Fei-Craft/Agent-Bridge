@@ -2,6 +2,7 @@
 # This file is the machine-local overlay (not the repo default).
 
 [hub]
+allow_insecure_callbacks = false # opt in only to permit loopback HTTP callbacks
 host = "127.0.0.1"
 port = 8765
 max_depth = 3

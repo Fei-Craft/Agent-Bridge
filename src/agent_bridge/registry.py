@@ -753,7 +753,7 @@ class Registry:
         if caller_task and caller_task.notification_source_task_id:
             notify_caller, callback_url, callback_secret_name = False, None, None
         callback_secret = load_callback_secret(callback_secret_name)
-        validate_callback(callback_url, callback_secret)
+        await validate_callback(callback_url, callback_secret, allow_insecure=self.config.hub.allow_insecure_callbacks)
         if notify_caller and (not caller_session_id or caller_session_id not in self.sessions):
             raise ValueError('notify_caller requires a hub worker caller session')
         if notification_source_task_id and (notify_caller or callback_url):

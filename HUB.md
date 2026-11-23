@@ -198,9 +198,12 @@ turns do not increase call depth; calls made during delivery turns cannot
 request further notifications/callbacks, preventing automatic notification loops.
 
 Callbacks POST the first-page `get_result` JSON (including `ok:true`) to a trusted
-HTTP(S) endpoint, without redirects. With a secret, verify
-`X-Agent-Bridge-Signature: sha256=HEX` as HMAC-SHA256 over the **raw request body**.
-`X-Agent-Bridge-Task-Id` identifies the source. Four attempts use exponential
+HTTPS endpoint, without redirects. With a secret, verify
+`X-Agent-Bridge-Signature: sha256=HEX` as HMAC-SHA256 over
+`timestamp + "." + task_id + "." + raw_body` (UTF-8 prefix, unchanged body bytes).
+Read `X-Agent-Bridge-Timestamp` (Unix seconds) and `X-Agent-Bridge-Task` from the
+headers; reject timestamps more than **300 seconds** from your clock before
+accepting the signature. Four attempts use exponential
 backoff (1, 2, 4 seconds); `callback_delivery` records attempts/status/error in
 `check_task` / `get_result`. `caller_delivery` records follow-up task ID/status.
 Callbacks are at-least-once: receivers must deduplicate by task ID. Caller turns
@@ -210,8 +213,12 @@ delivery means the follow-up was submitted, not that its model turn succeeded.
 An ended/missing caller records a delivery failure. Callback secrets are stored
 per task in the OS keyring (RAM only if unavailable), never in task
 results/logs/state JSON; they are deleted after final delivery/failure or pruning.
-Do not put secrets in URLs. Callback destinations are trusted configuration:
-the hub can reach local/private HTTP endpoints; do not accept untrusted URLs.
+Do not put secrets in URLs. DNS is checked at dispatch and every send; all resolved
+addresses must be public unicast. Connections are pinned to a checked IP while
+preserving the original Host and TLS SNI/certificate hostname. Private, loopback,
+link-local, multicast, reserved and unspecified destinations are rejected.
+Only `[hub] allow_insecure_callbacks = true` permits loopback (including HTTP),
+for local development. It does not enable private-network callbacks.
 
 ## Cloud API workers
 
@@ -337,8 +344,8 @@ preferences, wait and CORS preflight, is 404. POSTs require JSON and are streame
 under `max_body_bytes`; tokens have call budgets, per-minute rate limits and
 concurrent-task limits. Remote calls inherit cloud task depth, capped at three,
 and cannot call their own originating agent. No raw user callback URL is allowed
-on this surface (avoids remote callback SSRF). Admin callbacks remain trusted
-configuration and **can access private networks**; do not accept untrusted URLs.
+on this surface (avoids remote callback SSRF). Admin callbacks require public HTTPS
+destinations, except explicitly enabled loopback callbacks.
 
 `notify_caller: true` submits the local result into the originating Cursor agent
 as a follow-up run or Devin session as a message. It uses the durable ordered

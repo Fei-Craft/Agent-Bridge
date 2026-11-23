@@ -57,6 +57,15 @@ injection; they do not constrain what tools an agent can execute.
 
 ## Remote token lifetime
 
+Callbacks require public HTTPS destinations. DNS is validated at dispatch and
+each send; all addresses must pass checks and the connection uses a validated IP
+with the original Host/TLS SNI and certificate verification. No redirects/proxies.
+`hub.allow_insecure_callbacks = true` additionally permits loopback HTTP/HTTPS,
+not other private networks. Receivers verify HMAC-SHA256 over UTF-8
+`timestamp.task_id.` followed by exact body bytes, using X-Agent-Bridge-Timestamp,
+X-Agent-Bridge-Task and X-Agent-Bridge-Signature (`sha256=HEX`); reject >300s skew
+and deduplicate task IDs to resist replay. This changes the previous body-only signature.
+
 `require_cf_access` has been removed and is rejected in configuration. Header
 presence does not authenticate a JWT. Enforce Cloudflare Access service-token
 authentication at the edge, with no direct-origin bypass; the hub does not verify JWTs.

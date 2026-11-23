@@ -671,6 +671,10 @@ characters), then send `callback_secret_name=NAME` via REST/MCP/call or
 `ask --callback-secret-name NAME`. `list`/`delete NAME` manage those keyring entries.
 Raw `callback_secret` values are rejected. `ask --callback-secret` prompts and uses
 an ephemeral reference, requiring a shared secure keyring.
+Callbacks must resolve exclusively to public HTTPS addresses; DNS is checked on
+dispatch/every send and connections are pinned with original TLS hostname verification.
+For local tests only, `[hub] allow_insecure_callbacks = true` permits loopback HTTP/HTTPS.
+Receivers must verify the timestamped signature described in HUB.md (reject >300s skew).
 
 The management listener accepts only loopback bind addresses. The old
 `--allow-remote` flag is rejected; never tunnel the admin listener.

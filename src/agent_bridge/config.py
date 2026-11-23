@@ -331,6 +331,7 @@ class HubConfig(BaseModel):
     host: str = '127.0.0.1'
     port: int = Field(default=8765, ge=1, le=65535)
     max_depth: int = Field(default=3, ge=0)
+    allow_insecure_callbacks: bool = False
     remote: RemoteConfig = Field(default_factory=RemoteConfig)
 
     @model_validator(mode='after')
