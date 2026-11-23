@@ -41,11 +41,11 @@ class HubClient:
     def __init__(self, url: str, token: str = '') -> None:
         self.url = url.rstrip('/')
         self.token = remember(token)
-        self.manual_mode = False
+        self.host_manual_mode = False
 
     async def call(self, tool: str, **kwargs: Any) -> dict[str, Any]:
         try:
-            if self.manual_mode and tool in {'dispatch_task', 'invoke', 'create_baseline'} and not kwargs.get('user_requested'):
+            if self.host_manual_mode and tool in {'dispatch_task', 'invoke', 'create_baseline'} and not kwargs.get('user_requested'):
                 raise RuntimeError('coordinator mode is manual: retry with user_requested=true only when the user explicitly requested a worker')
             return await self._call(tool, **kwargs)
         except Exception as exc:
@@ -72,11 +72,9 @@ class HubClient:
             response = await client.request(method, self.url + path, headers=headers,
                                             **options)
             result: dict[str, Any] = response.json()
-        if tool == 'set_preferences' and result.get('ok') and kwargs.get('mode') is not None:
-            self.manual_mode = result['coordinator']['mode'] == 'manual'
         if tool == 'list_agents':
             result.update(backend='hub', hub_url=self.url)
-            if self.manual_mode and 'coordinator' in result:
+            if self.host_manual_mode and 'coordinator' in result:
                 result['coordinator']['mode'] = 'manual'
         return result
 

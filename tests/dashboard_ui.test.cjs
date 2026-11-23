@@ -49,6 +49,17 @@ test('timeline reads nested provider text, error events and hostile text as text
   assert.match(get('transcript').textContent, /错误请求失败/);
   assert.match(get('transcript').textContent, /unknown_event事件已记录/);
 });
+test('timeline renders Antigravity step and top-level text deltas across polls', () => {
+  const {run, get} = setup();
+  run(`appendTranscript([{type:'message_chunk',data:{payload:{event:'step_update',step_update:{
+    step_type:'agent_response',text_delta:'Git rebase '}}}}]);
+    appendTranscript([{type:'message_chunk',data:{payload:{text_delta:'rewrites '}}},
+      {type:'message_chunk',data:{payload:{delta:'history.'}}},
+      {type:'message_chunk',data:{payload:{step_update:{text_delta:''}}}}]);`);
+  assert.equal(get('transcript').children.length, 1);
+  assert.match(get('transcript').textContent, /代理回复Git rebase rewrites history\./);
+  assert.doesNotMatch(get('transcript').textContent, /事件已记录|text_delta|payload/);
+});
 test('metadata renders labeled values and pills, hiding empty remote/file fields', () => {
   const {run, get} = setup();
   run(`renderMetadata({agent:'fake',status:'completed',task_id:'task_1',session_id:'session_1',
@@ -90,6 +101,11 @@ test('empty gateway, approvals, audit and task list have quiet designed states',
   assert.match(get('tasks').textContent, /暂无匹配的任务/);
   assert.equal(run('delivery({})'), '');
   assert.equal(run("delivery({caller_delivery:{status:'delivered'}})"), '通知 · 已送达');
+});
+test('unresolvable workspaces are explicitly unavailable in the gateway', () => {
+  const {run, get} = setup();
+  run(`snapshot.remote={enabled:false,require_approval:false,agents:[],workspaces:{loop:null}}; renderGateway();`);
+  assert.match(get('gateway-status').textContent, /loop→路径不可用（无法解析）/);
 });
 test('API errors remain visible and expired authentication stops refresh', async () => {
   const {run, get, context} = setup();
