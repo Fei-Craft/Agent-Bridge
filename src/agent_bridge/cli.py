@@ -44,6 +44,7 @@ Usage:
   agent-bridge install-skill   copy the coordinator skill into host skill dirs
   agent-bridge help            this text
   agent-bridge serve [--host HOST] [--port PORT] [--allow-remote]
+  agent-bridge ui [--no-open]  open the local dashboard using a one-time login link
   agent-bridge secrets set|delete cursor|devin; agent-bridge secrets list
   agent-bridge approvals list|approve ID|deny ID
   agent-bridge tunnel [--name NAME] [--public-url HTTPS_ORIGIN]
@@ -327,6 +328,28 @@ def main(argv: Sequence[str] | None = None) -> None:
         from agent_bridge.desktop_pipe import relay_stdio
 
         relay_stdio(Path(args[1]))
+        return
+    if command == 'ui':
+        import asyncio
+        import webbrowser
+
+        from agent_bridge.hub_client import discover
+
+        parser = argparse.ArgumentParser(prog='agent-bridge ui')
+        parser.add_argument('--no-open', action='store_true')
+        options = parser.parse_args(args[1:])
+
+        async def open_ui():
+            client = await discover()
+            if client is None:
+                raise RuntimeError('no authenticated running hub discovered')
+            result = await client.call('create_ui_login')
+            if not result.get('ok'):
+                raise RuntimeError(result.get('error', 'UI login unavailable'))
+            if options.no_open or not webbrowser.open(result['url']):
+                print(result['url'])
+
+        asyncio.run(open_ui())
         return
     if command in {'approvals', 'tunnel'}:
         import asyncio

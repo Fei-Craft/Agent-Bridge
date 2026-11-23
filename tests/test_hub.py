@@ -11,6 +11,7 @@ import httpx2
 import pytest
 
 from agent_bridge import cli, server
+from agent_bridge import secrets as vault
 from agent_bridge.adapters.acp import AcpAdapter
 from agent_bridge.config import AgentConfig, EnvConfig, load_config
 from agent_bridge.hub import create_app, validate_host
@@ -84,6 +85,19 @@ async def test_lifecycle_cleanup(bridge_home):
     assert not (bridge_home / 'hub.json').exists()
 
 
+async def test_second_hub_cannot_replace_live_discovery(hub, bridge_home):
+    client, _ = hub
+    before = (bridge_home / 'hub.json').read_bytes()
+    token = vault.get(vault.hub_key(bridge_home))
+    other = create_app(Registry.create(bridge_home))
+    with pytest.raises((RuntimeError, TimeoutError)):
+        async with other.router.lifespan_context(other):
+            pass
+    assert (bridge_home / 'hub.json').read_bytes() == before
+    assert vault.get(vault.hub_key(bridge_home)) == token
+    assert (await client.get('/v1/health')).status_code == 200
+
+
 async def test_acp_echo_and_spawn_environment(hub, tmp_path, monkeypatch):
     client, registry = hub
     registry.config.agents['echo'] = AgentConfig(
@@ -153,6 +167,22 @@ async def test_discovery_empty_and_unhealthy(bridge_home, monkeypatch):
     assert await discover(bridge_home) is None
     monkeypatch.setenv('AGENT_BRIDGE_HUB_URL', 'http://127.0.0.1:1')
     assert await discover(bridge_home) is None
+
+
+async def test_mcp_proxy_honors_manual_host_mode(hub, monkeypatch, tmp_path):
+    client, registry = hub
+    original = httpx2.AsyncClient
+    monkeypatch.setattr(httpx2, 'AsyncClient', lambda **kwargs: original(transport=client._transport, **kwargs))
+    monkeypatch.setenv('AGENT_BRIDGE_MODE', 'manual')
+    async with server.lifespan(server.mcp) as backend:
+        assert isinstance(backend, HubClient)
+        blocked = await backend.call('dispatch_task', agent='fake', message='no request', cwd=str(tmp_path))
+        assert blocked['ok'] is False
+        assert 'manual' in blocked['error']
+        assert registry.tasks == {}
+        assert (await backend.call('list_agents'))['coordinator']['mode'] == 'manual'
+        accepted = await backend.call('dispatch_task', agent='fake', message='requested', cwd=str(tmp_path), user_requested=True)
+        assert accepted['ok'] is True
 
 
 async def test_client_errors():

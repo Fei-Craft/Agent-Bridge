@@ -554,6 +554,7 @@ class Registry:
 
     async def stop(self) -> None:
         self._stopping = True
+        self.remote.close()
         await self.deliveries.stop()
         await self._quota_cache.close()
         watchdog = self._watchdog
@@ -849,6 +850,7 @@ class Registry:
         notification_source_task_id: str | None = None,
         baseline: str | None = None,
         fork_label: str | None = None,
+        remote_origin: bool = False,
     ) -> dict:
         if not self.dispatch_enabled:
             raise RuntimeError(NESTED_DISPATCH_ERROR)
@@ -906,6 +908,7 @@ class Registry:
         request: tuple = (agent, message, resolved_cwd, session_id, model, effort, title, user_requested)
         if cloud:
             request += (repo, ref)
+        legacy_request = request if not any((notify_caller, caller_session_id, callback_url, callback_secret)) else None
         request += (notify_caller, caller_session_id, callback_url, callback_secret)
         if baseline is not None or fork_label is not None:
             request += (baseline, fork_label)
@@ -913,7 +916,9 @@ class Registry:
             desktop_connected = desktop_worker and self.desktop.connected
             if request_id is not None and request_id in self._requests:
                 previous_fp, task_id = self._requests[request_id]
-                if previous_fp != _request_fingerprint(request):
+                if previous_fp != _request_fingerprint(request) and (
+                    legacy_request is None or previous_fp != _request_fingerprint(legacy_request)
+                ):
                     raise ValueError("request_id is already bound to a different dispatch request")
                 task = self.tasks[task_id]
                 return {
@@ -974,8 +979,8 @@ class Registry:
                     cwd=resolved_cwd,
                     repo=repo if repo is not None else (agent_cfg.cloud.repo if agent_cfg.cloud else None),
                     ref=ref if ref is not None else (agent_cfg.cloud.ref if agent_cfg.cloud else None),
-                    model=selected.model if selected else model,
-                    effort=selected.effort if selected else effort,
+                    model=selected.model if selected else (None if cloud else model),
+                    effort=selected.effort if selected else (None if cloud else effort),
                     fork_source_id=selected.native_session_id if selected else None,
                     baseline_id=selected.baseline_id if selected else None,
                     fork_label=(fork_label.strip() if fork_label else title or f"{selected.name} · {message[:48]}") if selected else None,
@@ -984,17 +989,18 @@ class Registry:
                 )
                 self._stamp_owner(session)
                 self.sessions[session.session_id] = session
-            if model:
+            if model and not cloud:
                 session.model = model
-            if effort:
+            if effort and not cloud:
                 session.effort = effort
             if title:
                 session.title = title
             if session_id is None:
                 session.cwd = resolved_cwd
             session.last_active_at = iso()
+            session.remote_origin = session.remote_origin or remote_origin
             if caller_session_id:
-                session.call_depth = depth
+                session.call_depth = max(session.call_depth, depth)
             task = Task(
                 call_depth=session.call_depth,
                 task_id=_new_id("task"),
@@ -1066,7 +1072,9 @@ class Registry:
         started_monotonic = time.monotonic()
         task = self.tasks[task_id]
         session = self.sessions[task.session_id]
-        if hub_worker_context.get():
+        if session.remote_origin:
+            hub_worker_context.set({'AGENT_BRIDGE_HUB': 'off'})
+        elif hub_worker_context.get():
             hub_worker_context.set({**hub_worker_context.get(), 'AGENT_BRIDGE_CALLER_SESSION': session.session_id})
         adapter = self._adapter_for(session)
         task.status = TaskStatus.running
@@ -1687,14 +1695,14 @@ class Registry:
             try:
                 await asyncio.wait_for(event.wait(), timeout=timeout_sec)
             except TimeoutError:
-                return {"timed_out": True, **self._task_snapshot(self.tasks[task_id])}
+                return redact({"timed_out": True, **self._task_snapshot(self.tasks[task_id])})
         # A terminal answer must also be on disk, not merely queued
         # behind the background flusher.
-        return {
+        return redact({
             "timed_out": False,
             "persisted": (await self._persisted(task)) is True,
             **self._task_snapshot(self.tasks[task_id], include_result=True),
-        }
+        })
 
     async def check_task(self, task_id: str) -> dict:
         task = self._require_task(task_id, allow_disk=True)

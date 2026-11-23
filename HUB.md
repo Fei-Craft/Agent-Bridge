@@ -1,5 +1,26 @@
 # Central hub
 
+## Local dashboard
+
+Run `agent-bridge ui` after starting the hub; `agent-bridge ui --no-open` prints
+a login URL instead. The Chinese dashboard at `/ui` provides agents, sessions,
+task filtering/refresh, transcripts/results, dispatch/cancel, delivery status,
+gateway allowlists, recent redacted audit records and approvals. It follows the
+system light/dark theme and adapts to small screens. Task list is limited to the
+latest 500 in-memory tasks; audit shows up to 30 recent records.
+
+Available **only on the admin loopback listener**, never the remote gateway.
+Login links contain a single-use code valid for 60 seconds, not the bearer token.
+The page removes the fragment immediately and exchanges the code for a one-hour
+HttpOnly, SameSite=Strict session cookie. Codes/sessions are hashed, RAM-only;
+restart or logout invalidates sessions. No localStorage, CDN or frontend build.
+Cookie API calls require the UI header and same loopback origin; cookies cannot
+change preferences, end sessions, mint login codes or reconfigure the gateway.
+Treat printed login links as credentials. Separate CLI discovery needs a usable
+secure keyring (or an explicitly supplied in-memory worker environment token).
+Browser profiles/history and same-user host compromise remain outside the hub's
+security boundary. Never tunnel the admin listener.
+
 Run one long-lived registry for all your local agents:
 
 ```text
@@ -279,6 +300,12 @@ API references: [Cursor v1](https://cursor.com/docs/cloud-agent/api/endpoints),
 
 ## Opt-in cloud-to-local gateway
 
+Remote-originated local workers receive **no hub credentials** and have peer
+calls disabled (`AGENT_BRIDGE_HUB=off`), including later turns in those sessions.
+They cannot use the unrestricted admin API. Hub-managed result delivery back to
+the cloud caller remains available; recursively delegating from these local
+workers is deliberately unsupported.
+
 Cloud agents can use a **separate, restricted** gateway, not the admin API.
 It is off by default. Copy `[hub.remote]` from `agents.toml.example`, with explicit
 `remote_callable_agents` and named absolute `remote_workspaces`. Both listeners
@@ -344,7 +371,8 @@ discarded on restart. Admin-only REST: GET `/v1/approvals`, POST
 `remote-audit.jsonl` is mode 0600, recording time, token hash prefix, peer IP,
 bounded CF-Ray/CF-Connecting-IP fields, route, agent, workspace and outcome, not
 prompts, Authorization or JWT contents. Forwarded CF metadata is advisory.
-Back up/rotate audit files safely; quotas are per token, not a global disk/DoS cap.
+Audit rotates at 1 MiB with one backup (both mode 0600); unauthenticated writes
+are globally limited to 20/minute. Quotas are per token, not a global compute/DoS cap.
 
 For public use prefer a named tunnel behind **Cloudflare Access**, service-token
 policy and edge rate limits. Provide `CF-Access-Client-Id` and

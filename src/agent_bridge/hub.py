@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
+import psutil
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -20,9 +21,11 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from agent_bridge.api import BridgeService, _error, wait_for_result
+from agent_bridge.dashboard import Dashboard, DashboardHeaders
 from agent_bridge.desktop_ipc import serve_desktop
 from agent_bridge.hub_client import ROUTES
 from agent_bridge.paths import ensure_home
+from agent_bridge.persist import file_lock, read_json
 from agent_bridge.registry import Registry
 from agent_bridge.remote import create_remote_app
 from agent_bridge.secrets import delete, hub_key, remember, set_secret
@@ -63,34 +66,43 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
             return result
 
     service = HubService(registry)
+    dashboard = Dashboard(registry, url)
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
         path = registry.home / 'hub.json'
-        await registry.start()
-        set_secret(hub_key(registry.home), secret)
-        try:
-            with tempfile.NamedTemporaryFile(mode='w', dir=registry.home, delete=False) as file:
-                temporary = file.name
-                json.dump(dict(url=url, pid=os.getpid(), started_at=datetime.now(UTC).isoformat()), file)
-            os.replace(temporary, path)
-            async with serve_desktop(registry.home, registry.desktop):
-                yield
-        finally:
+        with file_lock(registry.home / 'hub.lock', timeout_sec=0):
+            previous = read_json(path, {})
+            pid = previous.get('pid') if isinstance(previous, dict) else None
+            if isinstance(pid, int) and pid > 0 and psutil.pid_exists(pid):
+                raise RuntimeError('a hub is already running for this bridge home')
+            await registry.start()
+            record = dict(url=url, pid=os.getpid(), started_at=datetime.now(UTC).isoformat())
+            set_secret(hub_key(registry.home), secret)
             try:
-                if path.exists() and json.loads(path.read_text()).get('pid') == os.getpid():
-                    path.unlink()
-                    delete(hub_key(registry.home))
+                with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=registry.home, delete=False) as file:
+                    temporary = file.name
+                    json.dump(record, file)
+                os.replace(temporary, path)
+                async with serve_desktop(registry.home, registry.desktop):
+                    yield
             finally:
-                await registry.stop()
+                try:
+                    if read_json(path, {}) == record:
+                        path.unlink()
+                        delete(hub_key(registry.home))
+                finally:
+                    await registry.stop()
 
     def endpoint(tool: str):
         async def handle(request: Request):
-            if not secrets.compare_digest(request.headers.get('authorization', ''), f'Bearer {secret}'):
+            if not secrets.compare_digest(request.headers.get('authorization', ''), f'Bearer {secret}') and not dashboard.authorized(request, tool):
                 return JSONResponse(_error(PermissionError('invalid bearer token')), status_code=401)
             if tool == 'health':
                 return JSONResponse({'ok': True})
             try:
+                if tool == 'create_ui_login':
+                    return JSONResponse(dashboard.issue(request))
                 args: dict[str, Any] = dict(request.query_params)
                 if request.method in ('POST', 'PUT'):
                     body = await request.body()
@@ -164,14 +176,19 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                     caller_session_context.reset(caller_context)
                 if tool == 'list_agents':
                     result.update(backend='hub', hub_url=url)
+                    for agent in result.get('agents', []):
+                        agent['protocol'] = registry.config.get(agent['agent']).protocol
             except Exception as exc:
                 result = _error(exc)
             return JSONResponse(result, status_code=200 if result['ok'] else 400)
         return handle
 
     routes = [Route('/v1/health', endpoint('health'))]
+    routes.extend(dashboard.routes())
     routes.extend(Route(path, endpoint(tool), methods=[method]) for tool, (method, path, _) in ROUTES.items())
-    app = Starlette(routes=routes, lifespan=lifespan)
+    app = Starlette(routes=routes, lifespan=lifespan, middleware=[])
+    app.add_middleware(DashboardHeaders)
+    app.state.dashboard = dashboard
     app.state.token = secret
     app.state.registry = registry
     return app
@@ -210,6 +227,7 @@ def serve(host: str | None = None, port: int | None = None, allow_remote: bool =
                 try:
                     await asyncio.wait({*running, stopped}, return_when=asyncio.FIRST_COMPLETED)
                 finally:
+                    registry.remote.close()
                     admin_server.should_exit = gateway_server.should_exit = True
                     await asyncio.gather(*running)
                     stopped.cancel()
