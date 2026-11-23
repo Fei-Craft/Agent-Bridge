@@ -241,11 +241,20 @@ async def test_approval_workflow_via_admin(gateway, monkeypatch, approved):
         assert (await admin.get('/v1/approvals')).json()['approvals'] == []
 
 
-async def test_approval_expiry(gateway):
+async def test_approval_expiry(gateway, monkeypatch):
     client, registry, scope, _ = gateway
     registry.remote.config.require_approval = True
-    scope.expires = time.time() + 0.02
-    assert (await client.post('/v1/tasks', json=payload())).status_code == 403
+    scope.expires = time.time() + 3600
+    approve = registry.remote.approve
+
+    async def expire_approval(*args):
+        scope.expires = time.time() - 1
+        await approve(*args)
+
+    monkeypatch.setattr(registry.remote, 'approve', expire_approval)
+    response = await client.post('/v1/tasks', json=payload())
+    assert response.status_code == 403
+    assert response.json()['error'] == 'remote approval expired'
     assert not registry.remote.approvals
 
 
