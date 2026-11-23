@@ -61,9 +61,6 @@ class HubClient:
         if key:
             path = path.format(**{key: kwargs.pop(key)})
         headers = {'Authorization': f'Bearer {self.token}'}
-        caller = os.environ.get('AGENT_BRIDGE_CALLER_SESSION')
-        if caller:
-            headers['X-Agent-Bridge-Caller'] = caller
         async with httpx2.AsyncClient(trust_env=False, timeout=None) as client:
             options: dict[str, Any] = {'params': kwargs} if method == 'GET' else {'json': kwargs}
             response = await client.request(method, self.url + path, headers=headers,

@@ -90,6 +90,7 @@ def grok_effort(effort: str | None) -> str | None:
 
 
 class Session(BaseModel):
+    caller_session_id: str | None = None
     remote_origin: bool = False
     call_depth: int = 0
     notification_receipts: dict[str, str] = Field(default_factory=dict)

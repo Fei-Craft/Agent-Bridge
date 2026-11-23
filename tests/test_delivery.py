@@ -270,7 +270,7 @@ async def test_unsigned_empty_callback_and_backoff(registry, tmp_path, monkeypat
     assert len(requests) == 1
 
 
-async def test_rest_notify_and_streaming_invoke(registry, tmp_path):
+async def test_rest_owner_notify_rejected_and_streaming_invoke(registry, tmp_path):
     app = create_app(registry, token='test')
     async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url='http://hub',
         headers={'Authorization': 'Bearer test'}) as client:
@@ -280,16 +280,14 @@ async def test_rest_notify_and_streaming_invoke(registry, tmp_path):
         sid = result.json()['session_id']
         child = (await client.post('/v1/tasks', json={'agent': 'fake', 'message': 'notify', 'cwd': str(tmp_path), 'notify_caller': True},
             headers={'X-Agent-Bridge-Caller': sid})).json()
-        assert child['ok']
-        await registry.wait_task(child['task_id'], timeout_sec=5)
-        await registry.deliveries.tick()
-        assert registry.tasks[child['task_id']].caller_delivery['status'] == 'delivered'
+        assert not child['ok']
+        assert 'notify_caller requires a hub worker caller session' in child['error']
 
 
 def test_cli_async_defaults_and_interrupt(monkeypatch, capsys):
     client = types.SimpleNamespace(call=AsyncMock(return_value={'ok': True, 'task_id': 'task-known'}))
     monkeypatch.setattr('agent_bridge.hub_client.discover', AsyncMock(return_value=client))
-    monkeypatch.setenv('AGENT_BRIDGE_CALLER_SESSION', 'caller')
+    monkeypatch.setenv('AGENT_BRIDGE_HUB_TOKEN', 'abw_' + 'x' * 43)
     cli.main(['ask', 'fake', 'hello', '--async'])
     assert 'task-known' in capsys.readouterr().out
     assert client.call.call_args.kwargs['notify_caller'] is True

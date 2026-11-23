@@ -653,6 +653,20 @@ and billing intact. Explicitly cancel or end_session to stop cloud work.
 
 ## Permissions
 
+The owner CLI/dashboard/coordinator keeps the admin hub bearer. Hub-launched
+local workers receive scoped `abw_` credentials instead: they can discover agents,
+call peers, and inspect/cancel their own child tasks, but cannot change preferences,
+approve remote calls, manage sessions or create dashboard logins. Caller identity
+and notification routing are bound to that credential; caller headers are ignored.
+`ask --async` detects the worker credential and defaults to caller notification.
+Admin callers must poll or use callbacks instead of `notify_caller`.
+
+Resident ACP credentials work only during active turns and are reused by the same
+process across follow-ups. Process exit, session closure and hub shutdown revoke
+them permanently; one-shot credentials expire at turn completion. No worker
+credential is written to Bridge state or discovery files. See [SECURITY.md](SECURITY.md)
+for the same-user/keyring boundary and the risk of token reuse during later turns.
+
 Cloud-to-local peer access is opt-in via `[hub.remote]`, a separate loopback
 listener with allowlisted agents and named absolute workspaces. See
 [gateway setup](HUB.md#opt-in-cloud-to-local-gateway) for scoped tokens, local

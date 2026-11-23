@@ -52,7 +52,8 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
     registry.dispatch_enabled = True
     registry.config.server.idle_exit_sec = 0
     secret = remember(token or secrets.token_urlsafe(32))
-    registry.deliveries.worker_context = {'AGENT_BRIDGE_HUB_URL': url, 'AGENT_BRIDGE_HUB_TOKEN': secret}
+    registry.worker_url = url
+    registry.deliveries.worker_context = {'AGENT_BRIDGE_HUB_URL': url}
     call_depth: ContextVar[int] = ContextVar('call_depth', default=0)
 
     class HubService(BridgeService):
@@ -94,8 +95,16 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
 
     def endpoint(tool: str):
         async def handle(request: Request):
-            if not secrets.compare_digest(request.headers.get('authorization', ''), f'Bearer {secret}') and not dashboard.authorized(request, tool):
+            authorization = request.headers.get('authorization', '')
+            owner = secrets.compare_digest(authorization, f'Bearer {secret}') or dashboard.authorized(request, tool)
+            caller = None
+            if not owner and authorization.startswith('Bearer '):
+                caller = registry.worker_tokens.authenticate(authorization.removeprefix('Bearer '))
+            if not owner and caller is None:
                 return JSONResponse(_error(PermissionError('invalid bearer token')), status_code=401)
+            if caller is not None and tool not in {'health', 'list_agents', 'dispatch_task', 'invoke',
+                    'check_task', 'wait_task', 'get_result', 'get_transcript', 'cancel_task'}:
+                return JSONResponse(_error(PermissionError('worker token cannot access this tool')), status_code=403)
             if tool == 'health':
                 return JSONResponse({'ok': True})
             try:
@@ -107,6 +116,18 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                     if body:
                         args.update(json.loads(body))
                 args.update(request.path_params)
+                if caller is not None:
+                    if tool in {'check_task', 'wait_task', 'get_result', 'cancel_task'}:
+                        task = registry.tasks.get(args.get('task_id', ''))
+                        if task is None or task.caller_session_id != caller:
+                            return JSONResponse(_error(PermissionError('task is not owned by caller')), status_code=403)
+                    if tool == 'get_transcript' or (tool in {'dispatch_task', 'invoke'} and args.get('session_id')):
+                        sid = args.get('session_id')
+                        session = registry.sessions.get(sid or '')
+                        if sid != caller and (session is None or session.caller_session_id != caller):
+                            return JSONResponse(_error(PermissionError('session is not owned by caller')), status_code=403)
+                        if tool == 'get_transcript' and sid == caller:
+                            return JSONResponse(_error(PermissionError('session is not owned by caller')), status_code=403)
                 for key in ('cursor', 'max_chars', 'offset', 'limit'):
                     if key in args:
                         args[key] = int(args[key])
@@ -116,7 +137,6 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                     if args['active_only'] not in ('true', 'false'):
                         raise ValueError('active_only must be true or false')
                     args['active_only'] = args['active_only'] == 'true'
-                caller = request.headers.get('x-agent-bridge-caller')
                 depth = 0
                 if caller and tool in ('dispatch_task', 'invoke'):
                     if caller not in registry.sessions:
@@ -131,7 +151,7 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                     depth = registry.sessions[caller].call_depth + 1
                     if depth > registry.config.hub.max_depth:
                         raise ValueError('hub max_depth exceeded')
-                context = hub_worker_context.set({'AGENT_BRIDGE_HUB_URL': url, 'AGENT_BRIDGE_HUB_TOKEN': secret})
+                context = hub_worker_context.set({'AGENT_BRIDGE_HUB_URL': url})
                 depth_context = call_depth.set(depth)
                 caller_context = caller_session_context.set(caller)
                 try:

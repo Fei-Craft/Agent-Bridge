@@ -127,6 +127,8 @@ class CodexAdapter(Adapter):
             **kwargs,
         )
         self._procs[session.session_id] = proc
+        if self.worker_tokens is not None and env.get('AGENT_BRIDGE_HUB_TOKEN', '').startswith('abw_'):
+            self.worker_tokens.processes[session.session_id] = proc
         self._cancelled.discard(session.session_id)
         if proc.pid:
             record_pid(

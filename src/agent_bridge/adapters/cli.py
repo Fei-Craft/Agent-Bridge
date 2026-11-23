@@ -55,6 +55,8 @@ class CliAdapter(CodexAdapter):
             limit=STDIO_LIMIT, **kwargs,
         )
         self._procs[session.session_id] = proc
+        if self.worker_tokens is not None and env.get('AGENT_BRIDGE_HUB_TOKEN', '').startswith('abw_'):
+            self.worker_tokens.processes[session.session_id] = proc
         self._cancelled.discard(session.session_id)
         record_pid(self.home, session.session_id, proc.pid, process_create_time(proc.pid),
                    process_image_name(proc.pid))

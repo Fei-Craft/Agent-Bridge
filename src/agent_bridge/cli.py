@@ -274,7 +274,7 @@ def hub_command(args: list[str]) -> None:
             timeout = values.pop('timeout_sec')
             if timeout is not None and timeout < 0:
                 raise ValueError('--timeout must be non-negative')
-            if async_mode and os.environ.get('AGENT_BRIDGE_CALLER_SESSION'):
+            if async_mode and os.environ.get('AGENT_BRIDGE_HUB_TOKEN', '').startswith('abw_'):
                 values.setdefault('notify_caller', True)
             dispatch = asyncio.create_task(client.call('dispatch_task', **values))
             try:

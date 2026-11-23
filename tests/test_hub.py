@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -13,7 +15,11 @@ import pytest
 from agent_bridge import cli, server
 from agent_bridge import secrets as vault
 from agent_bridge.adapters.acp import AcpAdapter
-from agent_bridge.config import AgentConfig, EnvConfig, load_config
+from agent_bridge.adapters.antigravity import AgyAdapter
+from agent_bridge.adapters.cli import CliAdapter
+from agent_bridge.adapters.codex import CodexAdapter
+from agent_bridge.adapters.fake import FakeAdapter
+from agent_bridge.config import AgentConfig, CliConfig, EnvConfig, load_config
 from agent_bridge.hub import create_app, validate_host
 from agent_bridge.hub_client import HubClient, discover
 from agent_bridge.registry import Registry
@@ -65,18 +71,193 @@ async def test_routes(hub, bridge_home, tmp_path):
     assert (await client.post('/v1/tasks', content='{')).status_code == 400
 
 
-async def test_depth_and_self_dispatch(hub, tmp_path):
-    client, _ = hub
+@pytest.fixture
+async def worker(hub, tmp_path, monkeypatch):
+    client, registry = hub
+    started, release = asyncio.Event(), asyncio.Event()
+    environment = {}
+    original = FakeAdapter.run_turn
+
+    async def run(adapter, session, task):
+        if task.message == 'root':
+            environment.update(build_worker_env(worker_context=True, log_fill=False))
+            started.set()
+            await release.wait()
+        return await original(adapter, session, task)
+
+    monkeypatch.setattr(FakeAdapter, 'run_turn', run)
+    root = (await client.post('/v1/tasks', json={'agent': 'fake', 'message': 'root', 'cwd': str(tmp_path)})).json()
+    await asyncio.wait_for(started.wait(), 5)
+    try:
+        yield client, registry, root, environment
+    finally:
+        release.set()
+        await registry.wait_task(root['task_id'], timeout_sec=5)
+
+
+async def test_depth_and_self_dispatch(worker, tmp_path):
+    client, registry, root, env = worker
     body = {'agent': 'fake', 'message': 'peer', 'cwd': str(tmp_path)}
-    root = (await client.post('/v1/tasks', json=body)).json()
-    caller = {'X-Agent-Bridge-Caller': root['session_id']}
+    caller = {'Authorization': 'Bearer ' + env['AGENT_BRIDGE_HUB_TOKEN'], 'X-Agent-Bridge-Caller': 'forged'}
     assert (await client.post('/v1/tasks', json={**body, 'session_id': root['session_id']}, headers=caller)).status_code == 400
     peer = (await client.post('/v1/tasks', json=body, headers=caller)).json()
     assert peer['ok']
-    too_deep = await client.post('/v1/tasks', json=body, headers={'X-Agent-Bridge-Caller': peer['session_id']})
+    assert registry.tasks[peer['task_id']].caller_session_id == root['session_id']
+    assert registry.sessions[peer['session_id']].call_depth == 1
+    registry.sessions[root['session_id']].call_depth = 1
+    too_deep = await client.post('/v1/tasks', json=body, headers=caller)
     assert too_deep.status_code == 400
     assert 'max_depth' in too_deep.json()['error']
-    assert (await client.post('/v1/tasks', json=body, headers={'X-Agent-Bridge-Caller': 'unknown'})).status_code == 400
+    owner = (await client.post('/v1/tasks', json=body, headers={'X-Agent-Bridge-Caller': 'unknown'})).json()
+    assert owner['ok'] and registry.tasks[owner['task_id']].caller_session_id is None
+    assert registry.sessions[owner['session_id']].call_depth == 0
+
+
+@pytest.mark.parametrize(('method', 'path', 'body'), [
+    ('POST', '/v1/approvals/forged/approve', {}),
+    ('POST', '/v1/approvals/forged/deny', {}),
+    ('GET', '/v1/approvals', None),
+    ('PUT', '/v1/preferences', {'mode': 'auto'}),
+    ('PUT', '/v1/remote/public-url', {'public_url': 'https://example.com'}),
+    ('GET', '/v1/remote', None),
+    ('POST', '/v1/ui/login-code', {}),
+    ('GET', '/v1/sessions', None),
+    ('DELETE', '/v1/sessions/other', None),
+    ('GET', '/v1/tasks/other', None),
+    ('GET', '/v1/tasks/other/wait', None),
+    ('GET', '/v1/tasks/other/result', None),
+    ('POST', '/v1/tasks/other/cancel', {}),
+    ('GET', '/v1/sessions/other/transcript', None),
+])
+async def test_worker_cannot_access_admin_or_unowned_tasks(worker, method, path, body):
+    client, _, _, env = worker
+    response = await client.request(method, path, json=body,
+        headers={'Authorization': 'Bearer ' + env['AGENT_BRIDGE_HUB_TOKEN']})
+    assert response.status_code == 403
+
+
+async def test_worker_owned_task_access_and_notify(worker, tmp_path):
+    client, registry, root, env = worker
+    token = env['AGENT_BRIDGE_HUB_TOKEN']
+    headers = {'Authorization': 'Bearer ' + token, 'X-Agent-Bridge-Caller': 'victim'}
+    assert token.startswith('abw_') and token != 'test-token'
+    assert token not in registry.worker_tokens.scopes
+    assert registry.worker_tokens.scopes[hashlib.sha256(token.encode()).hexdigest()] == root['session_id']
+    assert 'AGENT_BRIDGE_HUB_TOKEN' not in registry.deliveries.worker_context
+    assert 'AGENT_BRIDGE_CALLER_SESSION' not in env
+    assert (await client.get('/v1/health', headers=headers)).status_code == 200
+    assert (await client.get('/v1/agents', headers=headers)).status_code == 200
+    assert (await client.get('/v1/tasks/' + root['task_id'], headers=headers)).status_code == 403
+    assert (await client.get('/v1/sessions/' + root['session_id'] + '/transcript', headers=headers)).status_code == 403
+    victim = (await client.post('/v1/tasks', json={'agent': 'fake', 'message': 'victim', 'cwd': str(tmp_path)})).json()
+    await registry.wait_task(victim['task_id'], timeout_sec=5)
+    headers['X-Agent-Bridge-Caller'] = victim['session_id']
+    assert (await client.get('/v1/tasks/' + victim['task_id'], headers=headers)).status_code == 403
+    assert (await client.post('/v1/tasks', headers=headers, json={'agent': 'fake', 'message': 'inject',
+        'cwd': str(tmp_path), 'session_id': victim['session_id']})).status_code == 403
+    child = (await client.post('/v1/tasks', headers=headers, json={
+        'agent': 'fake', 'message': 'child', 'cwd': str(tmp_path), 'notify_caller': True})).json()
+    assert child['ok'] and registry.tasks[child['task_id']].caller_session_id == root['session_id']
+    for suffix in ('', '/wait?timeout_sec=5', '/result'):
+        assert (await client.get('/v1/tasks/' + child['task_id'] + suffix, headers=headers)).status_code == 200
+    assert (await client.get('/v1/sessions/' + child['session_id'] + '/transcript', headers=headers)).status_code == 200
+    assert (await client.post('/v1/tasks/' + child['task_id'] + '/cancel', headers=headers, json={})).status_code == 200
+    invoked = (await client.post('/v1/agents/fake/invoke', headers=headers,
+        json={'message': 'invoked', 'cwd': str(tmp_path)})).json()
+    assert invoked['status'] == 'completed'
+    assert registry.tasks[invoked['task_id']].caller_session_id == root['session_id']
+    followup = (await client.post('/v1/tasks', headers=headers, json={'agent': 'fake', 'message': 'followup',
+        'cwd': str(tmp_path), 'session_id': invoked['session_id']})).json()
+    assert followup['ok']
+    await registry.wait_task(followup['task_id'], timeout_sec=5)
+    registry._drop_task(invoked['task_id'])
+    assert (await client.get('/v1/sessions/' + invoked['session_id'] + '/transcript', headers=headers)).status_code == 200
+    owner_turn = (await client.post('/v1/tasks', json={'agent': 'fake', 'message': 'private owner followup',
+        'cwd': str(tmp_path), 'session_id': invoked['session_id']})).json()
+    await registry.wait_task(owner_turn['task_id'], timeout_sec=5)
+    registry._drop_task(owner_turn['task_id'])
+    assert (await client.get('/v1/sessions/' + invoked['session_id'] + '/transcript', headers=headers)).status_code == 403
+    rejected = await client.post('/v1/tasks', json={'agent': 'fake', 'message': 'owner notify',
+        'cwd': str(tmp_path), 'notify_caller': True}, headers={'X-Agent-Bridge-Caller': root['session_id']})
+    assert rejected.status_code == 400 and 'caller session' in rejected.json()['error']
+    await registry.flush_state()
+    for path in registry.home.rglob('*'):
+        if path.is_file():
+            assert token.encode() not in path.read_bytes()
+
+
+async def test_notification_turn_cannot_notify_again(worker, tmp_path):
+    client, registry, root, env = worker
+    registry.tasks[root['task_id']].notification_source_task_id = 'source'
+    result = (await client.post('/v1/tasks', json={'agent': 'fake', 'message': 'child',
+        'cwd': str(tmp_path), 'notify_caller': True},
+        headers={'Authorization': 'Bearer ' + env['AGENT_BRIDGE_HUB_TOKEN']})).json()
+    assert result['ok'] and not registry.tasks[result['task_id']].notify_caller
+
+
+async def test_worker_single_turn_token_revoked_after_completion(hub, tmp_path, monkeypatch):
+    client, registry = hub
+    captured = []
+    original = FakeAdapter.run_turn
+
+    async def run(adapter, session, task):
+        env = build_worker_env(worker_context=True, log_fill=False)
+        captured.append(env['AGENT_BRIDGE_HUB_TOKEN'])
+        assert registry.worker_tokens.authenticate(captured[-1]) == session.session_id
+        return await original(adapter, session, task)
+
+    monkeypatch.setattr(FakeAdapter, 'run_turn', run)
+    result = (await client.post('/v1/agents/fake/invoke', json={'message': 'first', 'cwd': str(tmp_path)})).json()
+    assert result['status'] == 'completed'
+    assert (await client.get('/v1/health', headers={'Authorization': 'Bearer ' + captured[0]})).status_code == 401
+    assert not registry.worker_tokens.scopes
+
+
+@pytest.mark.parametrize(('protocol', 'adapter_type', 'script'), [
+    ('cli', CliAdapter, 'fake_cli.py'),
+    ('codex', CodexAdapter, 'fake_codex.py'),
+    ('agy', AgyAdapter, 'fake_agy.py'),
+])
+async def test_one_shot_process_exit_revokes_token_before_turn_returns(hub, tmp_path, monkeypatch, protocol, adapter_type, script):
+    client, registry = hub
+    command = [sys.executable, str(Path(__file__).with_name(script))]
+    registry.config.agents['one-shot'] = AgentConfig(name='one-shot', protocol=protocol,
+        command=command, cli=CliConfig(parser='jsonl', prompt_stdin=True))
+    monkeypatch.setattr(CodexAdapter, '_base_cmd', lambda self, env=None: command)
+    spawn = asyncio.create_subprocess_exec
+    captured = []
+
+    async def capture(*args, **kwargs):
+        captured.append(kwargs['env']['AGENT_BRIDGE_HUB_TOKEN'])
+        return await spawn(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', capture)
+    run_turn = adapter_type.run_turn
+
+    async def run(adapter, session, task):
+        result = await run_turn(adapter, session, task)
+        assert session.session_id in registry.worker_tokens.active
+        assert registry.worker_tokens.processes[session.session_id].returncode is not None
+        assert registry.worker_tokens.authenticate(captured[-1]) is None
+        return result
+
+    monkeypatch.setattr(adapter_type, 'run_turn', run)
+    result = (await client.post('/v1/agents/one-shot/invoke', json={'message': 'hello', 'cwd': str(tmp_path)})).json()
+    assert result['status'] == 'completed'
+    assert captured[0].startswith('abw_') and captured[0] != 'test-token'
+    assert not registry.worker_tokens.scopes
+
+
+async def test_hub_client_does_not_send_caller_header(monkeypatch):
+    original = httpx2.AsyncClient
+
+    def handle(request):
+        assert 'X-Agent-Bridge-Caller' not in request.headers
+        return httpx2.Response(200, json={'ok': True})
+
+    monkeypatch.setenv('AGENT_BRIDGE_CALLER_SESSION', 'forged')
+    monkeypatch.setattr(httpx2, 'AsyncClient', lambda **kwargs: original(transport=httpx2.MockTransport(handle), **kwargs))
+    assert (await HubClient('http://hub', 'abw_' + 'h' * 43).call('list_agents'))['ok']
 
 
 async def test_lifecycle_cleanup(bridge_home):
@@ -104,20 +285,49 @@ async def test_acp_echo_and_spawn_environment(hub, tmp_path, monkeypatch):
     registry.config.agents['echo'] = AgentConfig(
         name='echo', protocol='acp', command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
     )
-    original_env = AcpAdapter._env
+    original_spawn = asyncio.create_subprocess_exec
     spawned = []
 
-    def capture_env(adapter):
-        env = original_env(adapter)
-        spawned.append(env)
-        return env
+    async def capture_env(*args, **kwargs):
+        spawned.append(dict(kwargs['env']))
+        return await original_spawn(*args, **kwargs)
 
-    monkeypatch.setattr(AcpAdapter, '_env', capture_env)
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', capture_env)
     result = (await client.post('/v1/agents/echo/invoke', json={'message': 'hello', 'cwd': str(tmp_path)})).json()
     assert result['result_text'] == 'echo:hello'
     assert spawned[0]['AGENT_BRIDGE_HUB_URL'] == 'http://127.0.0.1:8765'
-    assert spawned[0]['AGENT_BRIDGE_HUB_TOKEN'] == 'test-token'
-    assert spawned[0]['AGENT_BRIDGE_CALLER_SESSION'] == result['session_id']
+    token = spawned[0]['AGENT_BRIDGE_HUB_TOKEN']
+    assert token.startswith('abw_') and token != 'test-token'
+    assert 'AGENT_BRIDGE_CALLER_SESSION' not in spawned[0]
+    headers = {'Authorization': 'Bearer ' + token}
+    assert (await client.get('/v1/health', headers=headers)).status_code == 401
+    original_turn = AcpAdapter.run_turn
+
+    async def followup(adapter, session, task):
+        assert (await client.get('/v1/health', headers=headers)).status_code == 200
+        return await original_turn(adapter, session, task)
+
+    monkeypatch.setattr(AcpAdapter, 'run_turn', followup)
+    again = (await client.post('/v1/agents/echo/invoke', json={
+        'message': 'again', 'cwd': str(tmp_path), 'session_id': result['session_id']})).json()
+    assert again['result_text'] == 'echo:again' and len(spawned) == 1
+    assert (await client.get('/v1/health', headers=headers)).status_code == 401
+    adapter = registry._adapters[result['session_id']]
+    process = registry.worker_tokens.processes[result['session_id']]
+    process.kill()
+    await process.wait()
+    registry.worker_tokens.active.add(result['session_id'])
+    assert (await client.get('/v1/health', headers=headers)).status_code == 401
+    registry.worker_tokens.active.discard(result['session_id'])
+    monkeypatch.setattr(AcpAdapter, 'run_turn', original_turn)
+    restarted = (await client.post('/v1/agents/echo/invoke', json={
+        'message': 'restart', 'cwd': str(tmp_path), 'session_id': result['session_id']})).json()
+    assert restarted['result_text'] == 'echo:restart' and len(spawned) == 2
+    assert spawned[1]['AGENT_BRIDGE_HUB_TOKEN'] != token
+    assert adapter is registry._adapters[result['session_id']]
+    await registry.end_session(result['session_id'])
+    assert hashlib.sha256(token.encode()).hexdigest() not in registry.worker_tokens.scopes
+    assert not registry.worker_tokens.scopes
 
 
 def test_hub_config(bridge_home):
