@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { lstat } from 'node:fs/promises'
 import { createConnection } from 'node:net'
 import { homedir } from 'node:os'
@@ -28,6 +29,12 @@ async function connect(home, bridgeExecutable) {
     throw new Error('Agent Bridge Desktop IPC requires a private, current-user socket')
   }
   const stream = createConnection({ path: endpoint })
+  try {
+    await once(stream, 'connect')
+  } catch (error) {
+    stream.destroy()
+    throw error
+  }
   return { input: stream, output: stream, close: () => stream.destroy() }
 }
 
@@ -39,6 +46,7 @@ export async function serve(controller, transport, signal) {
   output.on('error', onError)
   signal.addEventListener('abort', close, { once: true })
   const lines = createInterface({ input, crlfDelay: Infinity })
+  lines.on('error', onError)
   async function send(frame) {
     const data = JSON.stringify(frame)
     if (Buffer.byteLength(data) >= frameLimit) throw new Error('IPC frame too large')

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import socket
 import stat
 import sys
 from pathlib import Path
@@ -24,6 +25,34 @@ async def _wait_for_connection(ipc: DesktopIPC, connected: bool) -> None:
             return
         await asyncio.sleep(0.02)
     pytest.fail(f"Desktop IPC did not reach connected={connected}")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="stale Unix domain socket")
+async def test_connector_retries_stale_socket():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to run the Desktop connector")
+    fixture = Path(__file__).with_name("dsh_desktop_fixture.mjs")
+    with TemporaryDirectory(prefix="ab-dsh-") as directory:
+        home = Path(directory).resolve()
+        ipc_dir = home / "dsh-ipc"
+        ipc_dir.mkdir(mode=0o700)
+        endpoint = ipc_dir / "desktop.sock"
+        with socket.socket(socket.AF_UNIX) as stale:
+            stale.bind(str(endpoint))
+        endpoint.chmod(0o600)
+        proc = await asyncio.create_subprocess_exec(node, str(fixture), str(home))
+        try:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(proc.wait(), 1.5)
+            registry = Registry.create(home)
+            app = create_app(registry, token="fixture-bearer")
+            async with app.router.lifespan_context(app):
+                await _wait_for_connection(registry.desktop, True)
+        finally:
+            if proc.returncode is None:
+                proc.terminate()
+                await proc.wait()
 
 
 async def test_hub_lifecycle_through_desktop_connector(tmp_path):
