@@ -352,7 +352,8 @@ discarded on restart. Admin-only REST: GET `/v1/approvals`, POST
 `remote-audit.jsonl` is mode 0600, recording time, token hash prefix, peer IP,
 bounded CF-Ray/CF-Connecting-IP fields, route, agent, workspace and outcome, not
 prompts, Authorization or JWT contents. Forwarded CF metadata is advisory.
-Back up/rotate audit files safely; quotas are per token, not a global disk/DoS cap.
+Audit rotates at 1 MiB with one backup (both mode 0600); unauthenticated writes
+are globally limited to 20/minute. Quotas are per token, not a global compute/DoS cap.
 
 For public use prefer a named tunnel behind **Cloudflare Access**, service-token
 policy and edge rate limits. Provide `CF-Access-Client-Id` and

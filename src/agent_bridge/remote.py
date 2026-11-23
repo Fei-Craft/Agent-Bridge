@@ -29,6 +29,8 @@ from agent_bridge.secrets import redact
 if TYPE_CHECKING:
     from agent_bridge.registry import Registry
 
+AUDIT_MAX_BYTES = 1024 * 1024
+
 
 @dataclass
 class TokenScope:
@@ -73,6 +75,7 @@ class RemoteGateway:
         self.config = registry.config.hub.remote
         self.scopes: dict[str, TokenScope] = {}
         self.approvals: dict[str, Approval] = {}
+        self._unauthenticated_audit: deque[float] = deque()
         self.workspaces: dict[str, str] = {}
         if self.config.enabled:
             for name, path in self.config.remote_workspaces.items():
@@ -164,6 +167,13 @@ class RemoteGateway:
         return found
 
     def audit(self, request: Request, route: str, scope: TokenScope | None, agent: str | None, workspace: str | None, outcome: str) -> None:
+        if scope is None:
+            now = time.monotonic()
+            while self._unauthenticated_audit and self._unauthenticated_audit[0] <= now - 60:
+                self._unauthenticated_audit.popleft()
+            if len(self._unauthenticated_audit) >= 20:
+                return
+            self._unauthenticated_audit.append(now)
         raw = request.headers.get('authorization', '').removeprefix('Bearer ')
         token_id = scope.digest[:12] if scope else hashlib.sha256(raw.encode()).hexdigest()[:12] if re.fullmatch(r'abr_[A-Za-z0-9_-]{43}', raw) else None
         record = redact({'timestamp': iso(), 'token_id': token_id,
@@ -173,10 +183,16 @@ class RemoteGateway:
             'cf_access_present': bool(request.headers.get('Cf-Access-Jwt-Assertion')),
             'route': route, 'agent': (agent or '')[:100], 'workspace': (workspace or '')[:100], 'outcome': outcome})
         path = self.registry.home / 'remote-audit.jsonl'
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, 'w') as file:
+        encoded = (json.dumps(record, ensure_ascii=False) + '\n').encode('utf-8')
+        if len(encoded) > AUDIT_MAX_BYTES:
+            return
+        if path.exists() and path.stat().st_size + len(encoded) > AUDIT_MAX_BYTES:
             os.chmod(path, 0o600)
-            file.write(json.dumps(record, ensure_ascii=False) + '\n')
+            os.replace(path, path.with_suffix('.jsonl.1'))
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, 'wb') as file:
+            os.chmod(path, 0o600)
+            file.write(encoded)
 
     def list_approvals(self) -> dict:
         return {'ok': True, 'approvals': [redact({'approval_id': item.approval_id, 'cloud_task_id': item.scope.cloud_task_id,

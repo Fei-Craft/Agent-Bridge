@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 import httpx2
 import pytest
 from pydantic import ValidationError
+from starlette.requests import Request
 
 from agent_bridge import cli
 from agent_bridge.adapters.fake import FakeAdapter
@@ -252,6 +253,24 @@ async def test_full_approval_message_is_visible(gateway):
     message = 'safe-looking prefix ' * 100 + 'DESTRUCTIVE SUFFIX MUST BE VISIBLE'
     registry.remote.approvals['approval_long'] = Approval('approval_long', scope, 'fake', 'project', message)
     assert registry.remote.list_approvals()['approvals'][0]['message'] == message
+
+
+async def test_unauthenticated_audit_is_rate_limited(gateway):
+    client, registry, _, _ = gateway
+    for _ in range(50):
+        assert (await client.get('/unknown')).status_code == 404
+    assert len((registry.home / 'remote-audit.jsonl').read_text().splitlines()) <= 20
+
+
+async def test_audit_storage_is_bounded(gateway, monkeypatch):
+    _, registry, scope, _ = gateway
+    monkeypatch.setattr('agent_bridge.remote.AUDIT_MAX_BYTES', 1024, raising=False)
+    request = Request({'type': 'http', 'headers': [], 'client': ('127.0.0.1', 1)})
+    for _ in range(50):
+        registry.remote.audit(request, 'dispatch', scope, 'fake', 'project', 'accepted')
+    files = list(registry.home.glob('remote-audit.jsonl*'))
+    assert len(files) <= 2
+    assert all(path.stat().st_size <= 1024 and path.stat().st_mode & 0o777 == 0o600 for path in files)
 
 
 async def test_chunked_body_limit_and_public_url_validation(gateway):
