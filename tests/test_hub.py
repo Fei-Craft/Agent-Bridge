@@ -439,6 +439,31 @@ async def test_generic_acp_reports_worker_confirmed_model_and_effort(hub, tmp_pa
     assert registry.sessions[result['session_id']].model == 'family'
 
 
+async def test_generic_acp_does_not_persist_invalid_worker_model(hub, bridge_home, tmp_path):
+    client, registry = hub
+    registry.config.agents['echo'] = AgentConfig(
+        name='echo', protocol='acp',
+        command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
+        env={'BRIDGE_ECHO_SELECTION': '1', 'BRIDGE_ECHO_MODEL_REPLACEMENT': 'worker model'},
+    )
+    path = '/v1/agents/echo/invoke'
+    body = {'message': 'hello', 'cwd': str(tmp_path)}
+    first = (await client.post(path, json={**body, 'model': 'default-model'})).json()
+    assert first['status'] == 'completed'
+    sid = first['session_id']
+    changed = (await client.post(path, json={**body, 'session_id': sid, 'model': 'family'})).json()
+    assert changed['status'] == 'completed'
+    assert changed['observed_model'] == 'worker model'
+    assert registry.sessions[sid].model == 'default-model'
+    assert any('not saved as a session preference' in warning for warning in changed['warnings'])
+    follow_up = (await client.post(path, json={**body, 'session_id': sid})).json()
+    assert follow_up['status'] == 'completed'
+    assert follow_up['model'] == 'default-model'
+    assert await registry.flush_state()
+    persisted = json.loads((bridge_home / 'state.json').read_text(encoding='utf-8'))
+    assert next(row for row in persisted['sessions'] if row['session_id'] == sid)['model'] == 'default-model'
+
+
 async def test_generic_acp_uses_config_categories_with_custom_ids(hub, tmp_path):
     client, registry = hub
     registry.config.agents['echo'] = AgentConfig(

@@ -81,6 +81,30 @@ async def test_env_status_includes_config_warnings(bridge_home, monkeypatch):
     assert (await registry.env_status())["warnings"] == registry.config.warnings
 
 
+async def test_start_restores_rows_with_legacy_selections(bridge_home, tmp_path):
+    session = Session(session_id="sess_old", agent="fake", cwd=str(tmp_path), effort="high")
+    task = Task(task_id="task_old", session_id=session.session_id, agent="fake", message="old", cwd=str(tmp_path),
+                status=TaskStatus.completed, model="valid-model", observed_model="previous worker model")
+    atomic_write_json(state_path(bridge_home), {
+        "sessions": [{**session.model_dump(mode="json"), "model": "previous worker model", "acp_model_tier": "high"}],
+        "tasks": [{**task.model_dump(mode="json"), "effort": "old effort"}],
+    })
+    registry = Registry.create(bridge_home)
+    try:
+        await registry.start()
+        restored = registry.sessions[session.session_id]
+        assert (restored.model, restored.acp_model_tier, restored.effort) == (None, None, "high")
+        restored_task = registry.tasks[task.task_id]
+        assert (restored_task.model, restored_task.observed_model, restored_task.effort) == (
+            "valid-model", "previous worker model", None,
+        )
+        state = read_json_strict(state_path(bridge_home), {})
+        assert state["sessions"][0]["model"] is None
+        assert state["tasks"][0]["effort"] is None
+    finally:
+        await registry.stop()
+
+
 async def test_session_scope_is_explicit(bridge_home, monkeypatch):
     registry = Registry.create(bridge_home)
     monkeypatch.setattr("agent_bridge.registry.count_sibling_servers", lambda: 3)

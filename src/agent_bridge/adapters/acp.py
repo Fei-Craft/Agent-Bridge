@@ -40,7 +40,7 @@ from agent_bridge.minimax_meta import (
     resolve_minimax_effort,
     resolve_minimax_model,
 )
-from agent_bridge.models import Session, Task, TaskFailure, TurnResult, dsh_effort, grok_effort
+from agent_bridge.models import Session, Task, TaskFailure, TurnResult, dsh_effort, grok_effort, validate_selection
 from agent_bridge.opencode_meta import resolve_opencode_effort
 from agent_bridge.processes import (
     drop_pid,
@@ -1571,9 +1571,17 @@ class AcpAdapter(Adapter):
                     model, tier = family, suffix
                 await self._sync_model_option(live, session, model=model, option_id=model_option_id)
                 if live.applied_model is not None:
-                    substituted = live.applied_model != model
-                    session.model = live.applied_model if substituted else selected_model
-                    session.acp_model_tier = tier if substituted or model == selected_model else None
+                    try:
+                        validate_selection(live.applied_model, 'model')
+                    except ValueError:
+                        live.pending_warnings.append(
+                            f"{self.agent.name} returned a model ID that does not match the request format; "
+                            "not saved as a session preference"
+                        )
+                    else:
+                        substituted = live.applied_model != model
+                        session.model = live.applied_model if substituted else selected_model
+                        session.acp_model_tier = tier if substituted or model == selected_model else None
         if task is not None and task.effort is not None:
             session.effort = task.effort
         effort = session.effort or tier

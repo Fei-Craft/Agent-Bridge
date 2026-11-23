@@ -117,6 +117,8 @@ class EchoAgent:
                     self._model = str(value)
                     if os.environ.get("BRIDGE_ECHO_COERCE_MODEL") == "1":
                         self._model = "family"
+                    if replacement := os.environ.get("BRIDGE_ECHO_MODEL_REPLACEMENT"):
+                        self._model = replacement
                     self._effort = "low"
                 else:
                     if value == "high" and os.environ.get("BRIDGE_ECHO_REJECT_HIGH") == "1":

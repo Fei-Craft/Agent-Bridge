@@ -477,6 +477,20 @@ class Registry:
             return {}
         return payload
 
+    @staticmethod
+    def _normalize_persisted_selections(raw: Any) -> Any:
+        if not isinstance(raw, dict):
+            return raw
+        row = raw.copy()
+        for field in ('model', 'effort'):
+            try:
+                validate_selection(row.get(field), field)
+            except ValueError:
+                row[field] = None
+                if field == 'model':
+                    row.pop('acp_model_tier', None)
+        return row
+
     async def start(self) -> None:
         self._stopping = False
         migrate(self.home)
@@ -494,7 +508,7 @@ class Registry:
             and self._foreign_live(raw.get("owner_pid"), raw.get("owner_create_time"))
         }
         for raw in payload.get("sessions") or []:
-            session = Session.model_validate(raw)
+            session = Session.model_validate(self._normalize_persisted_selections(raw))
             if self._foreign_live(session.owner_pid, session.owner_create_time):
                 continue
             self._stamp_owner(session)
@@ -503,7 +517,7 @@ class Registry:
             session.pid = None
             self.sessions[session.session_id] = session
         for raw in payload.get("tasks") or []:
-            task = Task.model_validate(raw)
+            task = Task.model_validate(self._normalize_persisted_selections(raw))
             if self._foreign_live(task.owner_pid, task.owner_create_time):
                 continue
             self._stamp_owner(task)
@@ -1366,7 +1380,7 @@ class Registry:
         for raw in rows:
             if isinstance(raw, dict) and raw.get("task_id") == task_id:
                 try:
-                    return Task.model_validate(raw)
+                    return Task.model_validate(self._normalize_persisted_selections(raw))
                 except ValueError:
                     return None
         return None
