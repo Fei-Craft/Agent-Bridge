@@ -434,7 +434,9 @@ async def test_unknown_status_then_completion(cloud_registry, provider, monkeypa
 
 
 def test_ask_cloud_options(monkeypatch, capsys):
-    client = types.SimpleNamespace(call=AsyncMock(return_value={'ok': True, 'result_text': 'cloud'}))
+    client = types.SimpleNamespace(call=AsyncMock(return_value={'ok': True, 'task_id': 'task-test'}),
+        wait_task=AsyncMock(return_value={'ok': True, 'status': 'completed'}),
+        get_result=AsyncMock(return_value={'ok': True, 'status': 'completed', 'result_text': 'cloud'}))
     monkeypatch.setattr('agent_bridge.hub_client.discover', AsyncMock(return_value=client))
     cli.main(['ask', 'remote', 'hello', '--repo', 'repo', '--ref', 'main', '--session-id', 'sess-test'])
     assert capsys.readouterr().out == 'cloud\n'

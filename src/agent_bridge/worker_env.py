@@ -24,6 +24,7 @@ from agent_bridge.paths import (
 log = logging.getLogger(__name__)
 
 hub_worker_context: ContextVar[Mapping[str, str]] = ContextVar('hub_worker_context', default=MappingProxyType({}))
+caller_session_context: ContextVar[str | None] = ContextVar('caller_session_context', default=None)
 
 
 def is_worker_context(env: Mapping[str, str] | None = None) -> bool:

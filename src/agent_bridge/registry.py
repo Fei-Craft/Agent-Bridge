@@ -26,6 +26,7 @@ from agent_bridge.config import (
     normalize_coordinator_mode,
     write_coordinator_overlay,
 )
+from agent_bridge.delivery import Deliveries, pending, validate_callback
 from agent_bridge.diagnostics import redact_diagnostic
 from agent_bridge.grok_observe import observe_grok_session
 from agent_bridge.kimi_observe import observe_kimi_session
@@ -189,6 +190,7 @@ class Registry:
         self._sibling_cache: tuple[float, int] | None = None
         self._quota_cache = QuotaCache(config.quota.cache_sec)
         self._stopping = False
+        self.deliveries = Deliveries(self)
         self._pending_state: dict[str, list[dict]] | None = None
         self._pending_gen = 0
         self._flush_task: asyncio.Task[None] | None = None
@@ -531,6 +533,7 @@ class Registry:
         if not await self.flush_state():
             raise RuntimeError("could not persist state.json") from self._state_error
         self.touch_activity()
+        self.deliveries.start()
         if self.config.server.idle_exit_sec > 0:
             self._watchdog = asyncio.create_task(
                 self._idle_exit_watchdog(),
@@ -539,6 +542,7 @@ class Registry:
 
     async def stop(self) -> None:
         self._stopping = True
+        await self.deliveries.stop()
         await self._quota_cache.close()
         watchdog = self._watchdog
         self._watchdog = None
@@ -710,9 +714,22 @@ class Registry:
         request_id: str | None = None,
         repo: str | None = None,
         ref: str | None = None,
+        notify_caller: bool = False,
+        caller_session_id: str | None = None,
+        callback_url: str | None = None,
+        callback_secret: str | None = None,
+        notification_source_task_id: str | None = None,
     ) -> dict:
         if not self.dispatch_enabled:
             raise RuntimeError(NESTED_DISPATCH_ERROR)
+        caller_task = self._busy_task(caller_session_id) if caller_session_id else None
+        if caller_task and caller_task.notification_source_task_id:
+            notify_caller, callback_url, callback_secret = False, None, None
+        validate_callback(callback_url, callback_secret)
+        if notify_caller and (not caller_session_id or caller_session_id not in self.sessions):
+            raise ValueError('notify_caller requires a hub worker caller session')
+        if notification_source_task_id and (notify_caller or callback_url):
+            raise ValueError('notification delivery turns cannot request notifications')
         if self.config.coordinator.mode == "manual" and not user_requested:
             raise RuntimeError(
                 "coordinator mode is manual: dispatch only when the user explicitly "
@@ -743,6 +760,7 @@ class Registry:
         request: tuple = (agent, message, resolved_cwd, session_id, model, effort, title, user_requested)
         if cloud:
             request += (repo, ref)
+        request += (notify_caller, caller_session_id, callback_url, callback_secret)
         async with self._lock:
             if request_id is not None and request_id in self._requests:
                 previous_fp, task_id = self._requests[request_id]
@@ -817,7 +835,18 @@ class Registry:
                 model=model or session.model,
                 effort=effort or session.effort,
                 status=TaskStatus.queued,
+                notify_caller=notify_caller,
+                caller_session_id=caller_session_id,
+                callback_url=callback_url,
+                callback_signed=callback_secret is not None,
+                caller_delivery={'status': 'pending'} if notify_caller else {},
+                callback_delivery={'status': 'pending', 'attempts': 0} if callback_url else {},
+                notification_source_task_id=notification_source_task_id,
             )
+            if callback_secret is not None:
+                self.deliveries.store_secret(task.task_id, callback_secret)
+            if notification_source_task_id:
+                session.notification_receipts[notification_source_task_id] = task.task_id
             self._stamp_owner(task)
             self.tasks[task.task_id] = task
             if request_id is not None:
@@ -1150,7 +1179,10 @@ class Registry:
                 log.info("removed orphan result %s (no task row)", orphan.name)
 
     def _drop_task(self, task_id: str) -> None:
+        if task_id in self.tasks and pending(self.tasks[task_id]):
+            return
         self.tasks.pop(task_id, None)
+        self.deliveries.secret_path(task_id).unlink(missing_ok=True)
         self._requests = {
             key: binding for key, binding in self._requests.items() if binding[1] != task_id
         }
@@ -1168,6 +1200,8 @@ class Registry:
             if session.proc_state in {ProcState.dead, ProcState.idle_unloaded}
             and session.session_id not in self._adapters
             and self._busy_task(session.session_id) is None
+            and not any(pending(t) and (t.session_id == session.session_id or t.caller_session_id == session.session_id)
+                        for t in self.tasks.values())
         ]
         candidates.sort(key=lambda item: _session_last_active_ts(item.last_active_at), reverse=True)
         drop = [
@@ -1360,6 +1394,9 @@ class Registry:
             "failure": task.failure.model_dump(mode="json") if task.failure else None,
             "warnings": task.warnings,
             "remote": task.remote,
+            "caller_delivery": task.caller_delivery,
+            "callback_delivery": task.callback_delivery,
+            "notification_source_task_id": task.notification_source_task_id,
             "repo": task.repo,
             "ref": task.ref,
             "files_changed": task.files_changed,

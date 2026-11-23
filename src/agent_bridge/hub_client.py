@@ -8,7 +8,7 @@ from typing import Any
 import httpx2
 import psutil
 
-from agent_bridge.api import _error
+from agent_bridge.api import _error, wait_for_result
 from agent_bridge.paths import bridge_home
 
 # tool: (HTTP method, path, path argument)
@@ -39,6 +39,14 @@ class HubClient:
             return _error(exc)
 
     async def _call(self, tool: str, **kwargs: Any) -> dict[str, Any]:
+        if tool == 'invoke':
+            timeout = kwargs.pop('timeout_sec', None)
+            if timeout is not None and timeout < 0:
+                raise ValueError('timeout_sec must be non-negative')
+            dispatched = await self.call('dispatch_task', **kwargs)
+            if not dispatched['ok']:
+                return dispatched
+            return await wait_for_result(self, dispatched['task_id'], timeout)
         method, path, key = ROUTES[tool]
         if key:
             path = path.format(**{key: kwargs.pop(key)})

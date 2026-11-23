@@ -1,27 +1,44 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from agent_bridge.models import DEFAULT_WAIT_SEC
 from agent_bridge.registry import RESULT_PAGE_MAX_CHARS, Registry
+from agent_bridge.worker_env import caller_session_context
 
 
 def _error(exc: Exception) -> dict[str, Any]:
     return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "error_type": type(exc).__name__}
 
 
+async def wait_for_result(service: Any, task_id: str, timeout_sec: float | None = None, progress: Any = None) -> dict[str, Any]:
+    if timeout_sec is not None and timeout_sec < 0:
+        raise ValueError('timeout_sec must be non-negative')
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    while True:
+        remaining = None if timeout_sec is None else max(0, timeout_sec - (loop.time() - started))
+        result = await service.wait_task(task_id=task_id, timeout_sec=15 if remaining is None else min(15, remaining))
+        if not result['ok']:
+            return result
+        if result['status'] in {'completed', 'failed', 'cancelled'} or remaining == 0:
+            return await service.get_result(task_id=task_id)
+        if progress:
+            await progress(loop.time() - started, task_id)
+
+
 class BridgeService:
     def __init__(self, registry: Registry) -> None:
         self.registry = registry
 
-    async def invoke(self, agent: str, message: str, cwd: str | None = None, timeout_sec: float = DEFAULT_WAIT_SEC, **kwargs: Any) -> dict[str, Any]:
+    async def invoke(self, agent: str, message: str, cwd: str | None = None, timeout_sec: float | None = None, **kwargs: Any) -> dict[str, Any]:
+        if timeout_sec is not None and timeout_sec < 0:
+            return _error(ValueError('timeout_sec must be non-negative'))
         dispatched = await self.dispatch_task(agent=agent, message=message, cwd=cwd, **kwargs)
         if not dispatched['ok']:
             return dispatched
-        waited = await self.wait_task(dispatched['task_id'], timeout_sec=timeout_sec)
-        if not waited['ok']:
-            return waited
-        return await self.get_result(dispatched['task_id'])
+        return await wait_for_result(self, dispatched['task_id'], timeout_sec)
 
     async def list_agents(self) -> dict[str, Any]:
         """List configured workers, the reconstructed host/proxy environment, and the coordinator policy (mode, instructions, runtime_context, dispatch_enabled). Call this first. Each agents[] row also carries quota: status ok | exhausted | unknown, windows[] with remaining_percent / resets_at / resets_in_sec, optional balance when reported by the provider, cached / stale flags, and detail. unknown means the quota could not be read (unsupported CLI, API-key login, timeout) — not that it is empty. Custom API/auth endpoints are unsupported; cached readings expire at window reset. Quota never affects available; treat it as information, routing still follows coordinator.instructions. Claude status covers shared 5h/weekly limits only: before dispatch, check the requested model's weekly:opus or weekly:sonnet remaining_percent even if status is ok. Zero means that model is exhausted; report its reset time or use an alternative allowed by coordinator.instructions. Missing or null readings mean unknown; model-specific windows alone cannot establish shared status. If dispatch_enabled is false, this is a nested worker-inherited instance — do not dispatch or set_preferences."""
@@ -63,6 +80,9 @@ class BridgeService:
         request_id: str | None = None,
         repo: str | None = None,
         ref: str | None = None,
+        notify_caller: bool = False,
+        callback_url: str | None = None,
+        callback_secret: str | None = None,
     ) -> dict[str, Any]:
         """Start a worker turn. Local workers require an absolute existing cwd. Cloud workers ignore cwd and accept optional repo/ref overrides; follow-ups keep their repository/ref. Cloud Cursor model is a model ID; Devin model is a mode, or effort maps off/low/medium/high/max to fast/lite/normal/ultra/ultra. Remote results carry provider IDs, URLs and PRs rather than local file changes. Cancelling Devin terminates the remote session permanently. Local model/effort behavior is unchanged. Pass session_id to continue. Set user_requested=true only when the user explicitly asked for a worker (required in manual mode). Rejected when coordinator.dispatch_enabled is false. For retry deduplication, supply a UUID request_id on the first call and replay the same ID and original arguments; identical retries reuse the task, different arguments are rejected. Bindings are lost on restart and are not shared with other instances. Returns immediately."""
         try:
@@ -78,6 +98,10 @@ class BridgeService:
                 request_id=request_id,
                 repo=repo,
                 ref=ref,
+                notify_caller=notify_caller,
+                caller_session_id=caller_session_context.get(),
+                callback_url=callback_url,
+                callback_secret=callback_secret,
             )
             return {"ok": True, **result}
         except Exception as exc:

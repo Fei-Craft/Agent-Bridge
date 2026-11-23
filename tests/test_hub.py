@@ -182,9 +182,12 @@ def test_cli_call_ask(monkeypatch, capsys, tmp_path):
     cli.main(['call', 'invoke', '--agent', 'opencode', '--model', 'opendesign/deepseek-v4.1-flash-eco'])
     assert json.loads(capsys.readouterr().out)['ok']
     client.call.assert_awaited_with('invoke', agent='opencode', model='opendesign/deepseek-v4.1-flash-eco')
+    client.call.return_value = {'ok': True, 'task_id': 'task-test'}
+    client.wait_task = AsyncMock(return_value={'ok': True, 'status': 'completed'})
+    client.get_result = AsyncMock(return_value={'ok': True, 'status': 'completed', 'result_text': 'answer'})
     cli.main(['ask', 'fake', 'hello', '--cwd', str(tmp_path), '--timeout', '5'])
     assert capsys.readouterr().out == 'answer\n'
-    client.call.assert_awaited_with('invoke', agent='fake', message='hello', cwd=str(tmp_path), timeout_sec=5)
+    client.call.assert_awaited_with('dispatch_task', agent='fake', message='hello', cwd=str(tmp_path))
     monkeypatch.setattr('agent_bridge.hub_client.discover', AsyncMock(return_value=None))
     with pytest.raises(RuntimeError, match='no running hub'):
         cli.main(['call', 'list_agents'])
@@ -192,12 +195,14 @@ def test_cli_call_ask(monkeypatch, capsys, tmp_path):
 
 @pytest.mark.parametrize('model,effort', [('opendesign/deepseek-v4.1-flash-eco', 'high'), ('', '')])
 def test_cli_ask_model_effort(monkeypatch, capsys, tmp_path, model, effort):
-    client = types.SimpleNamespace(call=AsyncMock(return_value={'ok': True, 'result_text': 'answer'}))
+    client = types.SimpleNamespace(call=AsyncMock(return_value={'ok': True, 'task_id': 'task-test'}),
+        wait_task=AsyncMock(return_value={'ok': True, 'status': 'completed'}),
+        get_result=AsyncMock(return_value={'ok': True, 'status': 'completed', 'result_text': 'answer'}))
     monkeypatch.setattr('agent_bridge.hub_client.discover', AsyncMock(return_value=client))
     cli.main(['ask', 'opencode', 'hello', '--cwd', str(tmp_path), '--model', model, '--effort', effort])
     assert capsys.readouterr().out == 'answer\n'
-    client.call.assert_awaited_with('invoke', agent='opencode', message='hello', cwd=str(tmp_path),
-                                   timeout_sec=180, model=model, effort=effort)
+    client.call.assert_awaited_with('dispatch_task', agent='opencode', message='hello', cwd=str(tmp_path),
+                                   model=model, effort=effort)
 
 
 @pytest.mark.parametrize('option', ['--model', '--effort'])

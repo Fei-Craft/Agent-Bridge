@@ -7,7 +7,7 @@ from typing import Any
 from mcp.server.mcpserver import Context, MCPServer
 from mcp_types import ToolAnnotations
 
-from agent_bridge.api import BridgeService
+from agent_bridge.api import BridgeService, wait_for_result
 from agent_bridge.api import _error as _error
 from agent_bridge.hub_client import HubClient, discover
 from agent_bridge.logging_setup import setup_logging
@@ -42,6 +42,9 @@ async def lifespan(_server: MCPServer[Registry | HubClient]) -> AsyncIterator[Re
 # Injected into the coordinator's context at the MCP handshake — the one
 # channel that needs no copied rules file and no skill install.
 INSTRUCTIONS = (
+    "Use invoke_agent for tool-like calls: it waits until done with progress. Some MCP hosts impose absolute "
+    "deadlines; use async dispatch_task with notify_caller (hub workers only), callback_url, or bounded polling then. "
+    "Worker ask --async defaults to notifying its caller session when idle; delivery status is on the task.\n"
     "Cloud workers (protocol=cloud) use remote repositories: cwd is optional, repo/ref may override config. "
     "Follow-ups keep their repo/ref. Read remote result metadata for URLs/PRs. Cancelling Devin cloud "
     "terminates its session permanently; cloud workers cannot call a loopback hub.\n"
@@ -124,15 +127,41 @@ async def dispatch_task(
     request_id: str | None = None,
     repo: str | None = None,
     ref: str | None = None,
+    notify_caller: bool = False,
+    callback_url: str | None = None,
+    callback_secret: str | None = None,
 ) -> dict[str, Any]:
     """Start a worker turn. Local workers require an absolute existing cwd. Cloud workers ignore cwd and accept optional repo/ref overrides; follow-ups keep their repository/ref. Cloud Cursor model is a model ID; Devin model is a mode, or effort maps off/low/medium/high/max to fast/lite/normal/ultra/ultra. Remote results carry provider IDs, URLs and PRs rather than local file changes. Cancelling Devin terminates the remote session permanently. Local model/effort behavior is unchanged. Pass session_id to continue. Set user_requested=true only when the user explicitly asked for a worker (required in manual mode). Rejected when coordinator.dispatch_enabled is false. For retry deduplication, supply a UUID request_id on the first call and replay the same ID and original arguments; identical retries reuse the task, different arguments are rejected. Bindings are lost on restart and are not shared with other instances. Returns immediately."""
-    return await _service(ctx).dispatch_task(agent=agent, message=message, cwd=cwd, session_id=session_id, model=model, effort=effort, title=title, user_requested=user_requested, request_id=request_id, repo=repo, ref=ref)
+    return await _service(ctx).dispatch_task(agent=agent, message=message, cwd=cwd, session_id=session_id, model=model, effort=effort, title=title, user_requested=user_requested, request_id=request_id, repo=repo, ref=ref, notify_caller=notify_caller, callback_url=callback_url, callback_secret=callback_secret)
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def wait_task(ctx: Context, task_id: str, timeout_sec: float = DEFAULT_WAIT_SEC) -> dict[str, Any]:
     """Wait until a task finishes or timeout_sec elapses (default 180). Timeout is not failure; call wait_task again. Stay under the host MCP tool timeout (Codex tool_timeout_sec, typically 600). Payloads carry silent_for_sec / stall_timeout_sec and files_changed_state (pending, collected, or unavailable)."""
     return await _service(ctx).wait_task(task_id=task_id, timeout_sec=timeout_sec)
+
+
+@mcp.tool()
+async def invoke_agent(
+    ctx: Context, agent: str, message: str, cwd: str | None = None,
+    session_id: str | None = None, model: str | None = None, effort: str | None = None,
+    repo: str | None = None, ref: str | None = None, user_requested: bool = False,
+    timeout_sec: float | None = None,
+) -> dict[str, Any]:
+    """Call a worker and wait for its terminal result, with periodic MCP progress. No default wait cap. Some clients impose absolute tool deadlines: use dispatch_task with async notification instead. A timeout returns the running task ID; it does not cancel work."""
+    if timeout_sec is not None and timeout_sec < 0:
+        return _error(ValueError('timeout_sec must be non-negative'))
+    service = _service(ctx)
+    result = await service.dispatch_task(agent=agent, message=message, cwd=cwd,
+        session_id=session_id, model=model, effort=effort, repo=repo, ref=ref, user_requested=user_requested)
+    if not result['ok']:
+        return result
+
+    async def progress(elapsed: float, task_id: str) -> None:
+        await ctx.report_progress(progress=elapsed, message=f'Waiting for {task_id}')
+
+    await progress(0, result['task_id'])
+    return await wait_for_result(service, result['task_id'], timeout_sec, progress)
 
 
 @mcp.tool(annotations=READ_ONLY)

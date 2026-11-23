@@ -43,7 +43,7 @@ Usage:
   agent-bridge help            this text
   agent-bridge serve [--host HOST] [--port PORT] [--allow-remote]
   agent-bridge call TOOL [--key value ...]   call a running hub (JSON output)
-  agent-bridge ask AGENT MESSAGE [--cwd DIR] [--repo URL] [--ref REF] [--session-id ID] [--timeout SEC] [--model MODEL] [--effort EFFORT]
+  agent-bridge ask AGENT MESSAGE [--cwd DIR] [--repo URL] [--ref REF] [--session-id ID] [--timeout SEC] [--model MODEL] [--effort EFFORT] [--async] [--notify-caller] [--callback-url URL] [--callback-secret SECRET]
 
 Install:
   uv tool install {GIT_SOURCE}
@@ -228,7 +228,11 @@ def hub_command(args: list[str]) -> None:
         parser.add_argument('agent')
         parser.add_argument('message')
         parser.add_argument('--cwd', default=str(Path.cwd()))
-        parser.add_argument('--timeout', type=float, default=180)
+        parser.add_argument('--timeout', type=float, default=None)
+        parser.add_argument('--async', dest='async_mode', action='store_true')
+        parser.add_argument('--notify-caller', action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
+        parser.add_argument('--callback-url', default=argparse.SUPPRESS)
+        parser.add_argument('--callback-secret', default=argparse.SUPPRESS)
         parser.add_argument('--model', default=argparse.SUPPRESS, help='model ID to pass to the worker')
         parser.add_argument('--effort', default=argparse.SUPPRESS, help='reasoning effort to pass to the worker')
         parser.add_argument('--repo', default=argparse.SUPPRESS, help='cloud repository URL')
@@ -256,11 +260,42 @@ def hub_command(args: list[str]) -> None:
         client = await discover()
         if client is None:
             raise RuntimeError('no running hub; start agent-bridge serve first')
+        if args[0] == 'ask':
+            from agent_bridge.api import wait_for_result
+            async_mode = values.pop('async_mode')
+            timeout = values.pop('timeout_sec')
+            if timeout is not None and timeout < 0:
+                raise ValueError('--timeout must be non-negative')
+            if async_mode and os.environ.get('AGENT_BRIDGE_CALLER_SESSION'):
+                values.setdefault('notify_caller', True)
+            dispatch = asyncio.create_task(client.call('dispatch_task', **values))
+            try:
+                dispatched = await asyncio.shield(dispatch)
+            except asyncio.CancelledError:
+                dispatched = await dispatch
+                if dispatched.get('task_id'):
+                    print(f"Interrupted; task continues: {dispatched['task_id']}", file=sys.stderr)
+                raise
+            if not dispatched['ok'] or async_mode:
+                return dispatched
+            task_id = dispatched['task_id']
+            print(f'Task started: {task_id}', file=sys.stderr)
+            try:
+                return await wait_for_result(client, task_id, timeout)
+            except asyncio.CancelledError:
+                print(f'Interrupted; task continues: {task_id}. Fetch with agent-bridge call get_result --task-id {task_id}', file=sys.stderr)
+                raise
         return await client.call(tool, **values)
 
-    result = asyncio.run(run())
+    try:
+        result = asyncio.run(run())
+    except KeyboardInterrupt:
+        raise SystemExit(130) from None
     if args[0] == 'ask' and result.get('ok'):
-        print(result.get('result_text', ''))
+        if result.get('status') not in {'completed', 'failed', 'cancelled'}:
+            print(json.dumps(result, ensure_ascii=False))
+        else:
+            print(result.get('result_text', ''))
     else:
         print(json.dumps(result, ensure_ascii=False))
     if not result.get('ok'):

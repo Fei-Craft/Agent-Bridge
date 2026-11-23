@@ -90,6 +90,8 @@ def grok_effort(effort: str | None) -> str | None:
 
 
 class Session(BaseModel):
+    call_depth: int = 0
+    notification_receipts: dict[str, str] = Field(default_factory=dict)
     session_id: str
     agent: str
     cwd: str
@@ -120,6 +122,13 @@ class TaskFailure(BaseModel):
 
 
 class Task(BaseModel):
+    caller_session_id: str | None = None
+    notify_caller: bool = False
+    callback_url: str | None = None
+    callback_signed: bool = False
+    caller_delivery: dict[str, Any] = Field(default_factory=dict)
+    callback_delivery: dict[str, Any] = Field(default_factory=dict)
+    notification_source_task_id: str | None = None
     task_id: str
     session_id: str
     agent: str
