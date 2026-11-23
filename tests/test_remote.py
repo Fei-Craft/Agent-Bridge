@@ -18,7 +18,9 @@ from starlette.requests import Request
 
 from agent_bridge import cli
 from agent_bridge.adapters.fake import FakeAdapter
+from agent_bridge.baselines import Baseline
 from agent_bridge.config import AgentConfig, HubConfig, RemoteConfig, load_config
+from agent_bridge.desktop_ipc import DesktopIPC
 from agent_bridge.hub import create_app
 from agent_bridge.models import ProcState, Session, Task, TaskStatus
 from agent_bridge.registry import Registry
@@ -31,7 +33,7 @@ from agent_bridge.worker_env import build_worker_env
 async def gateway(bridge_home, tmp_path):
     config = load_config(bridge_home)
     config.hub.remote = RemoteConfig(enabled=True, public_url='http://127.0.0.1:8766',
-        remote_callable_agents=['fake', 'cloud'], remote_workspaces={'project': str(tmp_path)})
+        remote_callable_agents=['fake', 'cloud', 'dsh'], remote_workspaces={'project': str(tmp_path)})
     config.agents['cloud'] = AgentConfig(name='cloud', protocol='cloud', cloud={'provider': 'devin', 'org_id': 'org'})
     registry = Registry.create(bridge_home, config)
     await registry.start()
@@ -51,6 +53,23 @@ async def gateway(bridge_home, tmp_path):
 
 def payload(**kwargs):
     return {'agent': 'fake', 'message': 'hello', 'workspace': 'project', **kwargs}
+
+
+async def test_remote_dsh_starts_without_local_default_baseline(gateway, monkeypatch):
+    client, registry, scope, _ = gateway
+    cwd = scope.workspaces['project']
+    registry.baselines.add(Baseline(baseline_id='private', name='Private', agent='dsh',
+        backend='desktop', cwd=cwd, native_session_id='private-native', source_session_id='private-source'))
+    registry.baselines.set_default(cwd, 'dsh', 'private')
+    monkeypatch.setattr(DesktopIPC, 'connected', property(lambda self: True))
+    monkeypatch.setattr(registry, '_adapter_for', lambda session: FakeAdapter(registry.config.get('fake'), registry.home))
+
+    result = (await client.post('/v1/agents/dsh/invoke', json=payload(agent='dsh'))).json()
+    assert result['ok']
+    assert result['baseline_id'] is None
+    assert registry.sessions[result['session_id']].fork_source_id is None
+    result = await client.post('/v1/tasks', json=payload(agent='dsh', baseline='private'))
+    assert result.status_code == 400
 
 
 async def test_remote_workers_never_receive_admin_credentials(gateway, monkeypatch):

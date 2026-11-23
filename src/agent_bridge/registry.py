@@ -896,6 +896,8 @@ class Registry:
         if not cloud and (repo is not None or ref is not None):
             raise ValueError('repo and ref are only supported by cloud agents')
         desktop_worker = agent == "dsh" and agent_cfg.protocol == "acp"
+        if remote_origin and (baseline not in (None, "empty") or fork_label is not None):
+            raise ValueError("baseline forks are not available to remote callers")
         if not desktop_worker and (baseline is not None or fork_label is not None):
             raise ValueError("baseline forks are currently supported only for dsh")
         if session_id and baseline not in (None, "default"):
@@ -959,7 +961,7 @@ class Registry:
                         f"session {session.session_id} is busy with {busy.task_id}; call wait_task first"
                     )
             else:
-                selected = self._resolve_baseline(resolved_cwd, agent, baseline) if desktop_worker else None
+                selected = self._resolve_baseline(resolved_cwd, agent, baseline) if desktop_worker and not remote_origin else None
                 if fork_label is not None and selected is None:
                     raise ValueError("fork_label requires a selected baseline")
                 if selected is not None:
