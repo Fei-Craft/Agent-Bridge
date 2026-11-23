@@ -26,6 +26,8 @@ log = logging.getLogger(__name__)
 def validate_callback(url: str | None, secret: str | None) -> None:
     if secret is not None and not url:
         raise ValueError('callback_secret requires callback_url')
+    if secret is not None and len(secret) < 32:
+        raise ValueError('callback_secret must contain at least 32 characters')
     if url:
         parsed = urlsplit(url)
         if parsed.scheme not in {'http', 'https'} or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:

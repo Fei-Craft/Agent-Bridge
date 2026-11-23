@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
+import subprocess
+from pathlib import Path
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
 
@@ -16,6 +20,13 @@ from agent_bridge.remote import create_remote_app
 ORIGIN = 'http://127.0.0.1:8765'
 UI = {'X-Agent-Bridge-UI': '1', 'Origin': ORIGIN}
 BEARER = {'Authorization': 'Bearer dashboard-admin-credential'}
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='Node is optional; required only for vanilla JS rendering tests')
+def test_dashboard_rendering():
+    result = subprocess.run(['node', '--test', str(Path(__file__).with_name('dashboard_ui.test.cjs'))],
+        capture_output=True, text=True, timeout=20, encoding='utf-8')
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.fixture
@@ -58,6 +69,9 @@ async def test_login_single_use_hashed_cookie_logout(dashboard):
     assert (await client.get('/ui/data', headers=UI)).json()['tasks'] == []
     for path in registry.home.rglob('*'):
         if path.is_file():
+            if os.name == 'nt' and path.name == 'hub.lock':
+                assert path.stat().st_size == 1
+                continue
             assert raw.encode() not in path.read_bytes()
             assert code.encode() not in path.read_bytes()
     response = await client.post('/ui/logout', headers=UI, json={})
@@ -135,6 +149,36 @@ async def test_ui_task_flow_and_redacted_audit(dashboard, tmp_path):
     data = (await client.get('/ui/data', headers=UI)).json()
     assert data['audit'][0]['cf_ray'] == '[REDACTED]'
     assert (await client.get('/v1/agents', headers=UI)).json()['agents'][0]['protocol'] == 'fake'
+
+
+async def test_dashboard_workspace_paths_are_canonical(dashboard, tmp_path, monkeypatch):
+    client, _, registry = dashboard
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    project = tmp_path / 'project'
+    project.mkdir()
+    registry.config.hub.remote.remote_workspaces = {'project': '~/project/../project'}
+    await login(client)
+    workspaces = (await client.get('/ui/data', headers=UI)).json()['remote']['workspaces']
+    assert workspaces == {'project': str(project.resolve())}
+    response = await client.post('/v1/tasks', headers=UI, json={
+        'agent': 'fake', 'message': 'operator request', 'cwd': workspaces['project'], 'user_requested': True})
+    assert response.status_code == 200
+    assert registry.tasks[response.json()['task_id']].cwd == str(project.resolve())
+
+
+@pytest.mark.parametrize('route', ['/v1/tasks', '/v1/agents/fake/invoke'])
+async def test_explicit_dashboard_dispatch_in_manual_mode(dashboard, tmp_path, route):
+    client, _, registry = dashboard
+    registry.config.coordinator.mode = 'manual'
+    await login(client)
+    body = {'message': 'operator request', 'cwd': str(tmp_path)}
+    if route == '/v1/tasks':
+        body['agent'] = 'fake'
+    assert (await client.post(route, headers=UI, json=body)).status_code == 400
+    response = await client.post(route, headers=UI, json={**body, 'user_requested': True})
+    assert response.status_code == 200 and response.json()['ok']
+    assert 'user_requested: true' in (await client.get('/ui/app.js')).text
 
 
 def test_cli_open_and_no_open(monkeypatch, capsys):

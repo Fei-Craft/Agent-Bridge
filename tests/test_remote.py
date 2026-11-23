@@ -123,7 +123,8 @@ async def test_dispatch_invoke_status_result_cancel_and_audit(gateway, monkeypat
     assert (await client.post('/v1/tasks/' + running['task_id'] + '/cancel', json={})).json()['ok']
     await registry.flush_state()
     audit = registry.home / 'remote-audit.jsonl'
-    assert audit.stat().st_mode & 0o777 == 0o600
+    if os.name != 'nt':
+        assert audit.stat().st_mode & 0o777 == 0o600
     records = [json.loads(line) for line in audit.read_text().splitlines()]
     assert records[0]['token_id'] == hashlib.sha256(token.encode()).hexdigest()[:12]
     assert records[0]['workspace'] == 'project' and records[0]['outcome'] == 'accepted'
@@ -289,7 +290,9 @@ async def test_audit_storage_is_bounded(gateway, monkeypatch):
         registry.remote.audit(request, 'dispatch', scope, 'fake', 'project', 'accepted')
     files = list(registry.home.glob('remote-audit.jsonl*'))
     assert len(files) <= 2
-    assert all(path.stat().st_size <= 1024 and path.stat().st_mode & 0o777 == 0o600 for path in files)
+    assert all(path.stat().st_size <= 1024 for path in files)
+    if os.name != 'nt':
+        assert all(path.stat().st_mode & 0o777 == 0o600 for path in files)
 
 
 async def test_shallow_caller_cannot_reset_saved_session_depth(gateway, tmp_path):

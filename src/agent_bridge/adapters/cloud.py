@@ -61,6 +61,9 @@ class CloudAdapter(Adapter):
                     method, self.cfg.base_url + path,
                     headers={'Authorization': f'Bearer {key}'}, json=body,
                 )
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise asyncio.CancelledError
             if response.status_code >= 300:
                 raise CloudError(response.status_code)
             data = redact(_scrub(response.json(), key))
