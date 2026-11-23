@@ -71,3 +71,14 @@ def test_revoked_worker_tokens_are_forgotten_but_still_redacted():
         tokens.issue(str(index))
         tokens.close()
     assert secrets._known == baseline
+
+
+def test_forget_handles_unrelated_surrogate_secret():
+    unrelated = secrets.remember('environment-key-\udcff')
+    tokens = WorkerTokens()
+    token = tokens.issue('session')
+    tokens.revoke('session')
+    assert token not in secrets._known and unrelated in secrets._known
+    token = tokens.issue('session')
+    tokens.close()
+    assert token not in secrets._known and unrelated in secrets._known

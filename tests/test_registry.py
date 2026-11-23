@@ -2316,6 +2316,25 @@ async def test_worker_error_and_warnings_are_sanitized_before_persisting(
         await registry.stop()
 
 
+async def test_worker_revoke_error_does_not_skip_completion(bridge_home, tmp_path, monkeypatch):
+    def fail_forget(digest):
+        raise RuntimeError('redaction cleanup failed')
+
+    monkeypatch.setattr('agent_bridge.worker_tokens.forget', fail_forget)
+    registry = Registry.create(bridge_home)
+    registry.worker_url = 'http://127.0.0.1:8765'
+    await registry.start()
+    try:
+        dispatched = await registry.dispatch_task('fake', 'work', cwd=str(tmp_path))
+        task_id = dispatched['task_id']
+        await asyncio.wait_for(registry._done[task_id].wait(), 5)
+        assert registry.tasks[task_id].status == TaskStatus.completed
+        assert task_id not in registry._bg
+        assert not registry.worker_tokens.active and not registry.worker_tokens.scopes
+    finally:
+        await registry.stop()
+
+
 @pytest.mark.asyncio
 async def test_turn_timeout_sec_caps_chatty_turn(bridge_home, tmp_path, monkeypatch):
     """H-16: a worker emitting worker-type events forever still hits the cap."""

@@ -22,7 +22,6 @@ from agent_bridge.config import AgentConfig, AppConfig, HubConfig, RemoteConfig,
 from agent_bridge.hub import create_app
 from agent_bridge.models import ProcState, Session, Task, TaskStatus
 from agent_bridge.registry import Registry
-from agent_bridge.worker_env import build_worker_env
 from agent_bridge.remote import Approval, create_remote_app
 from agent_bridge.tunnel import run_tunnel
 from agent_bridge.worker_env import build_worker_env
