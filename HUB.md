@@ -11,6 +11,8 @@ latest 500 in-memory tasks; audit shows up to 30 recent records.
 
 Available **only on the admin loopback listener**, never the remote gateway.
 Login links contain a single-use code valid for 60 seconds, not the bearer token.
+Opening the browser can expose that code in process arguments during its brief
+lifetime; `--no-open` prints the sensitive link instead. Do not save/share it.
 The page removes the fragment immediately and exchanges the code for a one-hour
 HttpOnly, SameSite=Strict session cookie. Codes/sessions are hashed, RAM-only;
 restart or logout invalidates sessions. No localStorage, CDN or frontend build.
@@ -363,6 +365,9 @@ discarded on restart. Admin-only REST: GET `/v1/approvals`, POST
 `remote-audit.jsonl` is mode 0600, recording time, token hash prefix, peer IP,
 bounded CF-Ray/CF-Connecting-IP fields, route, agent, workspace and outcome, not
 prompts, Authorization or JWT contents. Forwarded CF metadata is advisory.
+Behind tunnels `remote_ip` usually identifies the loopback tunnel process;
+CF-Connecting-IP can be spoofed without trusted edge validation and a
+non-bypassable origin. Do not use either field for authentication/attribution.
 Audit rotates at 1 MiB with one backup (both mode 0600); unauthenticated writes
 are globally limited to 20/minute. Quotas are per token, not a global compute/DoS cap.
 

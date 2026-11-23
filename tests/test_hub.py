@@ -20,7 +20,7 @@ from agent_bridge.adapters.cli import CliAdapter
 from agent_bridge.adapters.codex import CodexAdapter
 from agent_bridge.adapters.fake import FakeAdapter
 from agent_bridge.config import AgentConfig, CliConfig, EnvConfig, load_config
-from agent_bridge.hub import create_app, validate_host
+from agent_bridge.hub import create_app, serve, validate_host
 from agent_bridge.hub_client import HubClient, discover
 from agent_bridge.registry import Registry
 from agent_bridge.worker_env import build_worker_env, enforce_env_deny, hub_worker_context
@@ -520,3 +520,27 @@ def test_cli_ask_missing_option_value(monkeypatch, capsys, option):
     assert exc.value.code == 2
     assert f'argument {option}: expected one argument' in capsys.readouterr().err
     discover.assert_not_awaited()
+
+
+@pytest.mark.parametrize('remote', [False, True])
+def test_all_listeners_disable_access_logs(bridge_home, monkeypatch, remote):
+    registry = Registry.create(bridge_home)
+    registry.config.hub.remote.enabled = remote
+    monkeypatch.setattr(Registry, 'create', lambda **_: registry)
+    configurations = []
+
+    def run(app, **kwargs):
+        configurations.append(kwargs)
+
+    class Server:
+        def __init__(self, config):
+            configurations.append({'access_log': config.access_log})
+
+        async def serve(self):
+            return
+
+    monkeypatch.setattr('agent_bridge.hub.uvicorn.run', run)
+    monkeypatch.setattr('agent_bridge.hub._EmbeddedServer', Server)
+    serve()
+    assert len(configurations) == (2 if remote else 1)
+    assert all(config['access_log'] is False for config in configurations)

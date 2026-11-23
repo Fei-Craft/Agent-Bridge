@@ -225,7 +225,7 @@ def serve(host: str | None = None, port: int | None = None) -> None:
     url_host = f'[{host}]' if ':' in host else host
     app = create_app(registry, url=f'http://{url_host}:{port}')
     if not registry.config.hub.remote.enabled:
-        uvicorn.run(app, host=host, port=port)
+        uvicorn.run(app, host=host, port=port, access_log=False)
         return
 
     async def run():

@@ -13,10 +13,20 @@ from agent_bridge.adapters.cloud import CloudAdapter
 from agent_bridge.config import AgentConfig
 from agent_bridge.hub import create_app
 from agent_bridge.hub_client import discover
+from agent_bridge.models import Session, Task
 from agent_bridge.persist import atomic_write_json
 from agent_bridge.probes import probe_agent
 from agent_bridge.registry import Registry
 from agent_bridge.transcript import append_event, flush_pending
+
+
+@pytest.mark.parametrize('model', [Task, Session])
+def test_persisted_models_have_no_credential_fields(model):
+    for name, field in model.model_fields.items():
+        if name == 'callback_signed':
+            assert field.annotation is bool
+            continue
+        assert not any(part in name.lower() for part in ('secret', 'token', 'key', 'password')), name
 
 
 def test_keyring_cloud_and_cli(memory_keyring, monkeypatch, capsys, caplog):

@@ -81,3 +81,18 @@ Remote gateway tokens expire after 3600 seconds by default, independent of cloud
 turn timeouts (`hub.remote.token_ttl_sec` overrides this). The token is included
 in the cloud prompt and remains in provider-side session history; protect that
 history as credential-bearing data. Bridge redaction cannot remove provider copies.
+
+## Local dashboard and audit metadata
+
+Both listeners disable Uvicorn access logging, including query strings. The
+purpose-built gateway audit remains redacted. Behind a tunnel, `remote_ip` is
+typically the tunnel process's loopback address, not the original client.
+`CF-Connecting-IP` and other forwarded headers can be spoofed without trusted
+Access edge validation and a non-bypassable origin. Treat these fields as advisory,
+never as authentication or reliable attribution.
+
+`agent-bridge ui` passes its login URL to a browser process: the one-time code
+can be visible in process arguments until consumed or expired (60 seconds).
+The fragment is cleared by the page and is not the admin bearer. `--no-open`
+avoids launching a browser with that argument, but still prints a sensitive link;
+do not save/share it. This flow cannot protect against same-user process inspection.

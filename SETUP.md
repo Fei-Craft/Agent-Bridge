@@ -714,4 +714,11 @@ Never tunnel the admin port. The presence-only `require_cf_access` option is rem
 and rejected in config; enforce authentication at the Access edge. Workspaces are routing allowlists,
 not an OS sandbox; use isolated accounts/containers for untrusted cloud prompts.
 
+Access logs are disabled on both listeners. Gateway audit `remote_ip` behind a
+tunnel is usually loopback; forwarded CF IP headers are advisory and spoofable
+without trusted edge validation and a non-bypassable origin, not authentication.
+`agent-bridge ui` opens a URL whose single-use code lasts 60 seconds and may be
+visible in browser process arguments during that window. `--no-open` instead
+prints the sensitive link; do not record/share it. The admin bearer is never in it.
+
 Most worker CLIs run in always-approve / skip-permissions mode. Codex CLI defaults to `--approve-for-me` (auto review + workspace-write); `--yolo` is opt-in via `[agents.codex] session_meta = { yolo = true }`. Review is the coordinator's job: `git diff`, build, tests. Cap follow-up turns at three, then the coordinator patches the rest.

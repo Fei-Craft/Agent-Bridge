@@ -181,8 +181,13 @@ message / Cursor follow-up run 发送结果；交付 turn 不增加深度、不�
 POST `/v1/approvals/{id}/approve` 或 `/deny`、GET `/v1/remote`、
 PUT `/v1/remote/public-url`（JSON public_url 字段）。
 
+`agent-bridge ui` 一次性登录码有效60秒，传给浏览器时可能短暂出现在进程参数中；
+`--no-open` 改为输出敏感链接，请勿保存/分享。链接不包含管理 bearer。
+
 remote-audit.jsonl 权限 0600，仅记录时间、哈希前缀、IP/有限 CF 元数据、路由、agent、
 workspace、结果，不记录请求消息、Authorization 或 JWT。CF IP/Ray 仅作参考，可能伪造。
+隧道后的 remote_ip 通常只是隧道进程的回环地址；无可信 Access 边缘验证且 origin
+可绕过时，CF-Connecting-IP 可被伪造，不作为认证或可靠身份归属依据。两监听器关闭 access log。
 请安全轮转审计；每 token 限额不是全局磁盘/DoS 防护。
 
 公网建议使用 named tunnel + **Cloudflare Access 服务令牌策略** + 边缘限流，
