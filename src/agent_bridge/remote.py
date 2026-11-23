@@ -25,7 +25,6 @@ from starlette.routing import Route
 from agent_bridge.api import BridgeService, wait_for_result
 from agent_bridge.models import TERMINAL_STATUSES, Task, iso
 from agent_bridge.secrets import redact
-from agent_bridge.worker_env import hub_worker_context
 
 if TYPE_CHECKING:
     from agent_bridge.registry import Registry
@@ -302,13 +301,9 @@ class RemoteGateway:
                 await self.approve(scope, agent, workspace, message)
                 if scope.revoked or scope.expires <= time.time():
                     raise Rejected(401, 'token expired while awaiting approval')
-                context = hub_worker_context.set(self.registry.deliveries.worker_context)
-                try:
-                    dispatched = await self.registry.dispatch_task(agent, message, cwd=scope.workspaces[workspace],
-                        notify_caller=notify, caller_session_id=scope.session_id,
-                        model=body.get('model'), effort=body.get('effort'))
-                finally:
-                    hub_worker_context.reset(context)
+                dispatched = await self.registry.dispatch_task(agent, message, cwd=scope.workspaces[workspace],
+                    notify_caller=notify, caller_session_id=scope.session_id, remote_origin=True,
+                    model=body.get('model'), effort=body.get('effort'))
                 scope.owned_tasks.add(dispatched['task_id'])
             finally:
                 scope.reserved -= 1

@@ -281,6 +281,12 @@ API references: [Cursor v1](https://cursor.com/docs/cloud-agent/api/endpoints),
 
 ## Opt-in cloud-to-local gateway
 
+Remote-originated local workers receive **no hub credentials** and have peer
+calls disabled (`AGENT_BRIDGE_HUB=off`), including later turns in those sessions.
+They cannot use the unrestricted admin API. Hub-managed result delivery back to
+the cloud caller remains available; recursively delegating from these local
+workers is deliberately unsupported.
+
 Cloud agents can use a **separate, restricted** gateway, not the admin API.
 It is off by default. Copy `[hub.remote]` from `agents.toml.example`, with explicit
 `remote_callable_agents` and named absolute `remote_workspaces`. Both listeners

@@ -16,12 +16,14 @@ import pytest
 from pydantic import ValidationError
 
 from agent_bridge import cli
+from agent_bridge.adapters.fake import FakeAdapter
 from agent_bridge.config import AgentConfig, HubConfig, RemoteConfig, load_config
 from agent_bridge.hub import create_app
 from agent_bridge.models import ProcState, Session, Task, TaskStatus
 from agent_bridge.registry import Registry
 from agent_bridge.remote import create_remote_app
 from agent_bridge.tunnel import run_tunnel
+from agent_bridge.worker_env import build_worker_env
 
 
 @pytest.fixture
@@ -48,6 +50,26 @@ async def gateway(bridge_home, tmp_path):
 
 def payload(**kwargs):
     return {'agent': 'fake', 'message': 'hello', 'workspace': 'project', **kwargs}
+
+
+async def test_remote_workers_never_receive_admin_credentials(gateway, monkeypatch):
+    client, registry, _, _ = gateway
+    registry.deliveries.worker_context = {'AGENT_BRIDGE_HUB_URL': 'http://admin', 'AGENT_BRIDGE_HUB_TOKEN': 'unrestricted-admin'}
+    monkeypatch.setenv('AGENT_BRIDGE_HUB_TOKEN', 'inherited-admin')
+    monkeypatch.setenv('AGENT_BRIDGE_HUB_URL', 'http://admin')
+    captured = []
+    original = FakeAdapter.run_turn
+
+    async def run(adapter, session, task):
+        captured.append(build_worker_env(worker_context=True))
+        return await original(adapter, session, task)
+
+    monkeypatch.setattr(FakeAdapter, 'run_turn', run)
+    result = (await client.post('/v1/agents/fake/invoke', json=payload())).json()
+    assert result['ok']
+    assert 'AGENT_BRIDGE_HUB_TOKEN' not in captured[0]
+    assert 'AGENT_BRIDGE_HUB_URL' not in captured[0]
+    assert captured[0]['AGENT_BRIDGE_HUB'] == 'off'
 
 
 def test_remote_config_validation(tmp_path):

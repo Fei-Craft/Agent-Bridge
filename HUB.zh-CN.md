@@ -133,6 +133,10 @@ base_url 仅用于可信提供商/网关，真实密钥应走 HTTPS。
 
 ## 可选云端到本地网关
 
+远程来源的本地 worker 不注入任何 Hub 凭据，并强制 `AGENT_BRIDGE_HUB=off` 禁用后续
+peer 调用；同一 session 的续接也保持禁用。不能借此访问管理 API。Hub 负责的云端结果回推
+仍可用；这些本地 worker 再递归委派任务的能力有意不提供。
+
 默认关闭。复制 `agents.toml.example` 的 `[hub.remote]`，显式配置
 remote_callable_agents 和 remote_workspaces（名字到绝对目录的映射）。
 这是独立 Starlette 端口（默认 8766），不能与管理端 8765 相同；启用后两个端口

@@ -727,6 +727,7 @@ class Registry:
         callback_url: str | None = None,
         callback_secret: str | None = None,
         notification_source_task_id: str | None = None,
+        remote_origin: bool = False,
     ) -> dict:
         if not self.dispatch_enabled:
             raise RuntimeError(NESTED_DISPATCH_ERROR)
@@ -838,6 +839,7 @@ class Registry:
             if session_id is None:
                 session.cwd = resolved_cwd
             session.last_active_at = iso()
+            session.remote_origin = session.remote_origin or remote_origin
             if caller_session_id:
                 session.call_depth = depth
             task = Task(
@@ -905,7 +907,9 @@ class Registry:
         started_monotonic = time.monotonic()
         task = self.tasks[task_id]
         session = self.sessions[task.session_id]
-        if hub_worker_context.get():
+        if session.remote_origin:
+            hub_worker_context.set({'AGENT_BRIDGE_HUB': 'off'})
+        elif hub_worker_context.get():
             hub_worker_context.set({**hub_worker_context.get(), 'AGENT_BRIDGE_CALLER_SESSION': session.session_id})
         adapter = self._adapter_for(session)
         task.status = TaskStatus.running
