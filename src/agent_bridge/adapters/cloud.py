@@ -61,6 +61,9 @@ class CloudAdapter(Adapter):
                     method, self.cfg.base_url + path,
                     headers={'Authorization': f'Bearer {key}'}, json=body,
                 )
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise asyncio.CancelledError
             if response.status_code >= 300:
                 raise CloudError(response.status_code)
             data = redact(_scrub(response.json(), key))
@@ -142,6 +145,7 @@ class CloudAdapter(Adapter):
             body['autoCreatePR'] = self.cfg.auto_create_pr
             created = await self._create(session, task, '/v1/agents', body)
         agent_id = session.native_session_id
+        session.model, session.effort = task.model, task.effort
         run = created['run']
         run_id = run['id']
         self._record(session, task, provider='cursor', agent_id=agent_id, run_id=run_id)
@@ -220,6 +224,7 @@ class CloudAdapter(Adapter):
             assert session.native_session_id is not None
             path = self._devin_path(session.native_session_id)
             self._record(session, task, url=data.get('url'), devin_mode=mode)
+        session.model, session.effort = task.model, task.effort
         self._record(session, task, provider='devin', session_id=session.native_session_id)
         texts: list[str] = []
         failures = {

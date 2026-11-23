@@ -1,5 +1,20 @@
 # 中央 Hub
 
+## 本地仪表盘
+
+启动 Hub 后运行 `agent-bridge ui` 自动打开中文控制台，或用 `ui --no-open`
+打印登录链接。可查看代理、会话、最近 500 个内存任务、实时转录、分页结果、通知/回调状态，
+派发/取消任务，并查看网关白名单、最近 30 条脱敏审计和批准/拒绝待审批调用。
+任务每 3 秒刷新，支持系统浅深色模式与小屏布局。
+只有管理端回环监听器提供 `/ui`，远程网关始终 404。
+
+链接仅含 60 秒有效的一次性 code，不含管理 bearer token；页面立即清除 fragment，
+交换一小时有效的 HttpOnly、SameSite=Strict 会话 cookie。code/session 仅以哈希保存在内存，
+退出或重启失效；不用 localStorage、CDN 或前端构建。cookie API 仅限 UI 必需路由，
+要求自定义请求头及同源回环 Host/Origin；不能改偏好、结束会话、生成登录码或改网关配置。
+请保护打印的登录链接；独立 CLI 发现需可用的安全 keyring（或显式内存 worker 环境 token）。
+浏览器自身的历史/配置安全和同用户恶意程序不在 Hub 防护边界内。绝不隧道暴露管理端。
+
 先运行 `agent-bridge serve`，再打开协调器。现有 stdio MCP 配置会自动代理到
 同一个 HTTP Hub；所有本地 agent 共享一个 Registry。没有 Hub 时保持原来的本地模式。
 
@@ -28,7 +43,7 @@ worker 自动继承 Hub 地址、token、调用者 session id，嵌套 MCP 也�
 严格遵守 **NO plaintext secrets anywhere on disk (keys, hub token, callback secrets, issued tokens)**。
 使用 `agent-bridge` keyring 服务，只接受安全的 OS 后端，不使用明文文件后端。
 `agent-bridge secrets set cursor` / `set devin` 使用 getpass 隐藏输入；`secrets list`
-仅显示是否存在；`secrets delete cursor` 删除。修改后重启 Hub。`ask --callback-secret`
+仅显示是否存在；`secrets delete cursor` 删除。修改后重启 Hub。回调签名密钥至少需要 32 个字符。`ask --callback-secret`
 同样隐藏输入，不要把密钥放在命令参数、shell 历史、配置、URL 或提示词中。
 如果 keyring 不可用/锁定，明确警告，只保存在内存中，绝不回退到文件。
 此时独立 CLI/MCP 进程无法发现 Hub 的内存 token，需先配置/解锁安全的 OS keyring；
@@ -117,6 +132,10 @@ base_url 仅用于可信提供商/网关，真实密钥应走 HTTPS。
 可比较首轮、首个 worker 事件、续接轮耗时；首事件不一定是首个文本 token。
 
 ## 可选云端到本地网关
+
+远程来源的本地 worker 不注入任何 Hub 凭据，并强制 `AGENT_BRIDGE_HUB=off` 禁用后续
+peer 调用；同一 session 的续接也保持禁用。不能借此访问管理 API。Hub 负责的云端结果回推
+仍可用；这些本地 worker 再递归委派任务的能力有意不提供。
 
 默认关闭。复制 `agents.toml.example` 的 `[hub.remote]`，显式配置
 remote_callable_agents 和 remote_workspaces（名字到绝对目录的映射）。

@@ -34,15 +34,31 @@ def remember(value: str) -> str:
     return value
 
 
+def _redact_text(value: str, short_exact: bool = True) -> str:
+    value = re.sub(r'(?:abr|abu|abs)_[A-Za-z0-9_-]{43}', '[REDACTED]', value)
+    for secret in sorted(_known, key=len, reverse=True):
+        for form in (secret, json.dumps(secret, ensure_ascii=False)[1:-1], json.dumps(secret)[1:-1]):
+            if len(secret) >= 8:
+                value = value.replace(form, '[REDACTED]')
+            elif short_exact and value == form:
+                value = '[REDACTED]'
+    return value
+
+
 def redact(value: Any) -> Any:
     if isinstance(value, str):
-        value = re.sub(r'abr_[A-Za-z0-9_-]{43}', '[REDACTED]', value)
-        for secret in sorted(_known, key=len, reverse=True):
-            for form in (secret, json.dumps(secret, ensure_ascii=False)[1:-1], json.dumps(secret)[1:-1]):
-                value = value.replace(form, '[REDACTED]')
-        return value
+        return _redact_text(value)
     if isinstance(value, dict):
-        return {redact(k): redact(v) for k, v in value.items()}
+        result = {}
+        for key, item in value.items():
+            safe_key = _redact_text(key, short_exact=False) if isinstance(key, str) else key
+            if safe_key != key:
+                suffix = 1
+                while safe_key in value or safe_key in result:
+                    safe_key = f'[REDACTED-{suffix}]'
+                    suffix += 1
+            result[safe_key] = redact(item)
+        return result
     if isinstance(value, list):
         return [redact(v) for v in value]
     return value
@@ -120,30 +136,55 @@ def migrate(home: Path) -> None:
     discovery = home / 'hub.json'
     if discovery.exists():
         try:
-            info = json.loads(discovery.read_text())
+            info = json.loads(discovery.read_text(encoding='utf-8'))
             old_token = info.pop('token', None)
             if old_token:
                 remember(old_token)
                 discovery.unlink()
         except (ValueError, OSError):
-            discovery.unlink(missing_ok=True)
+            try:
+                discovery.unlink(missing_ok=True)
+            except OSError:
+                log.warning('Could not remove legacy discovery file %s', discovery)
     directory = home / 'callback-secrets'
     if directory.is_dir():
-        for path in directory.iterdir():
-            if path.is_file():
-                set_secret(callback_key(home, path.name), path.read_text())
-                path.unlink()
-        directory.rmdir()
-    from agent_bridge.persist import atomic_write_text
+        try:
+            legacy = list(directory.iterdir())
+        except OSError:
+            legacy = []
+            log.warning('Could not list legacy callback secrets %s', directory)
+        for path in legacy:
+            try:
+                if path.is_file():
+                    set_secret(callback_key(home, path.name), path.read_text(encoding='utf-8'))
+                    path.unlink()
+            except (OSError, UnicodeError):
+                log.warning('Could not migrate legacy callback secret %s', path)
+        try:
+            directory.rmdir()
+        except OSError:
+            log.warning('Could not remove legacy callback directory %s', directory)
+    from agent_bridge.persist import atomic_write_json, atomic_write_text
 
     paths = [home / 'state.json', home / 'pids.json']
     for name in ('transcripts', 'results', 'logs'):
         directory = home / name
         if directory.is_dir():
-            paths.extend(path for path in directory.iterdir() if path.is_file())
+            try:
+                paths.extend(path for path in directory.iterdir() if path.is_file())
+            except OSError:
+                log.warning('Could not list migration directory %s', directory)
     for path in paths:
-        if path.is_file():
-            original = path.read_text()
-            cleaned = redact(original)
-            if original != cleaned:
-                atomic_write_text(path, cleaned)
+        try:
+            if path.is_file():
+                original = path.read_text(encoding='utf-8')
+                if path.suffix == '.json':
+                    payload = json.loads(original)
+                    if payload != redact(payload):
+                        atomic_write_json(path, payload)
+                    continue
+                cleaned = redact(original)
+                if original != cleaned:
+                    atomic_write_text(path, cleaned)
+        except (OSError, ValueError):
+            log.warning('Could not scrub legacy file %s', path)

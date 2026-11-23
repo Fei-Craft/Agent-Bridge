@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import warnings
+from pathlib import Path
 
 import httpx2
 import pytest
@@ -48,7 +50,7 @@ def test_unavailable_and_plaintext_backend_refused(monkeypatch, caplog):
 
 
 async def test_full_flow_no_plaintext_and_discovery(bridge_home, tmp_path, monkeypatch):
-    token, callback, key = ('generated-hub-credential-value', 'callback-signing-value', 'provider-key-value')
+    token, callback, key = ('generated-hub-credential-value', 'callback-signing-value' * 2, 'provider-key-value')
     secrets.set_secret('cloud:cursor', key)
     registry = Registry.create(bridge_home)
     registry.config.agents['cursor'] = AgentConfig(name='cursor', protocol='cloud', cloud={'provider': 'cursor'})
@@ -67,6 +69,9 @@ async def test_full_flow_no_plaintext_and_discovery(bridge_home, tmp_path, monke
         await registry.flush_state()
         for path in bridge_home.rglob('*'):
             if path.is_file():
+                if os.name == 'nt' and path.name == 'hub.lock':
+                    assert path.stat().st_size == 1
+                    continue
                 content = path.read_bytes()
                 assert all(value.encode() not in content for value in (token, callback, key)), path
         assert not (bridge_home / 'callback-secrets').exists()
@@ -85,7 +90,7 @@ async def test_migration_and_unsigned_restart_refused(bridge_home, tmp_path, mon
     await registry.start()
     await registry.deliveries.stop()
     try:
-        response = await registry.dispatch_task('fake', 'hello', cwd=str(tmp_path), callback_url='http://listener', callback_secret='lost-callback-credential')
+        response = await registry.dispatch_task('fake', 'hello', cwd=str(tmp_path), callback_url='http://listener', callback_secret='lost-callback-credential' * 2)
         await registry.wait_task(response['task_id'], timeout_sec=5)
         task = registry.tasks[response['task_id']]
     finally:
@@ -109,6 +114,81 @@ def test_escaped_secret_redaction(tmp_path):
     path = tmp_path / 'state.json'
     atomic_write_json(path, {'value': value})
     assert json.loads(path.read_text()) == {'value': '[REDACTED]'}
+
+
+def test_migration_uses_utf8_on_ascii_locale(bridge_home, monkeypatch):
+    bridge_home.mkdir()
+    legacy = bridge_home / 'callback-secrets'
+    legacy.mkdir()
+    value = '回调签名密钥-credential'
+    (legacy / 'task_utf8').write_text(value, encoding='utf-8')
+    read = Path.read_text
+
+    def locale_read(path, encoding=None, **kwargs):
+        return read(path, encoding=encoding or 'ascii', **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', locale_read)
+    secrets.migrate(bridge_home)
+    assert secrets.get(secrets.callback_key(bridge_home, 'task_utf8')) == value
+    assert not legacy.exists()
+
+
+def test_migration_skips_unreadable_file_and_continues(bridge_home, monkeypatch):
+    bridge_home.mkdir()
+    directory = bridge_home / 'logs'
+    directory.mkdir()
+    (directory / 'bad.log').write_bytes(b'\xffinvalid UTF8')
+    value = secrets.remember('credential-that-must-be-scrubbed')
+    good = directory / 'good.log'
+    good.write_text(value, encoding='utf-8')
+    secrets.migrate(bridge_home)
+    assert value not in good.read_text(encoding='utf-8')
+
+
+def test_json_redaction_preserves_keys(tmp_path):
+    secrets.remember('id')
+    path = tmp_path / 'state.json'
+    atomic_write_json(path, {'session_id': 'sess_good', 'data': {'session_id': 'id'}})
+    secrets.migrate(tmp_path)
+    assert json.loads(path.read_text()) == {
+        'session_id': 'sess_good', 'data': {'session_id': '[REDACTED]'},
+    }
+
+
+def test_structured_secret_keys_are_redacted_without_collisions(tmp_path):
+    token = 'abr_' + 'x' * 43
+    credential = secrets.remember('long-provider-credential-value')
+    payload = {'session_id': 'sess_good', 'remote': {'structured_output': {
+        token: 'first', credential: 'second', '[REDACTED]': 'normal', '[REDACTED-1]': 'reserved',
+    }}}
+    path = tmp_path / 'state.json'
+    atomic_write_json(path, payload)
+    content = path.read_text()
+    assert token not in content and credential not in content
+    output = json.loads(content)
+    assert output['session_id'] == 'sess_good'
+    assert sorted(output['remote']['structured_output'].values()) == ['first', 'normal', 'reserved', 'second']
+    assert secrets.redact({}) == {}
+
+
+def test_short_secret_redaction_does_not_replace_substrings(tmp_path):
+    secrets.remember('id')
+    path = tmp_path / 'state.json'
+    atomic_write_json(path, {'task_id': 'task_valid', 'value': 'id'})
+    assert json.loads(path.read_text()) == {'task_id': 'task_valid', 'value': '[REDACTED]'}
+
+
+async def test_wait_preview_redacts_in_memory_credentials(bridge_home, tmp_path):
+    credential = secrets.remember('private-wait-result-credential')
+    registry = Registry.create(bridge_home)
+    await registry.start()
+    try:
+        task = await registry.dispatch_task('fake', credential, cwd=str(tmp_path))
+        result = await registry.wait_task(task['task_id'], timeout_sec=5)
+        assert credential not in json.dumps(result)
+        assert '[REDACTED]' in result['result_text']
+    finally:
+        await registry.stop()
 
 
 def test_no_echo_fallback(monkeypatch):

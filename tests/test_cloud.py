@@ -5,6 +5,7 @@ import json
 import re
 import threading
 import types
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
 from unittest.mock import AsyncMock
@@ -183,6 +184,30 @@ async def turn(registry, name, **kwargs):
     return await registry.get_result(task['task_id'])
 
 
+async def test_rejected_devin_mode_does_not_poison_followups(cloud_registry):
+    first = await turn(cloud_registry, 'devin', model='fast')
+    session = cloud_registry.sessions[first['session_id']]
+    rejected = await turn(cloud_registry, 'devin', session_id=session.session_id, model='ultra')
+    assert rejected['status'] == 'failed'
+    assert session.model == 'fast'
+    resumed = await turn(cloud_registry, 'devin', session_id=session.session_id)
+    assert resumed['status'] == 'completed'
+
+
+@pytest.mark.parametrize('name', ['cursor', 'devin'])
+async def test_dispatch_acknowledges_task_preferences_on_fresh_followup_and_retry(cloud_registry, name):
+    session_id = None
+    for model, effort in [('fast', 'low'), ('normal', 'medium')]:
+        args = {'agent': name, 'message': 'preferences', 'model': model, 'effort': effort,
+                'request_id': str(uuid.uuid4()), 'session_id': session_id}
+        first = await cloud_registry.dispatch_task(**args)
+        assert first['model'] == model and first['effort'] == effort
+        retry = await cloud_registry.dispatch_task(**args)
+        assert retry == {**first, 'reused': True}
+        await cloud_registry.wait_task(first['task_id'], timeout_sec=5)
+        session_id = first['session_id']
+
+
 def progress_event(monkeypatch, predicate):
     event = asyncio.Event()
     original = CloudAdapter._record
@@ -310,6 +335,35 @@ async def test_shutdown_preserves_remote(cloud_registry, provider, name, phase, 
     assert not any(method == 'DELETE' or path.endswith(('/archive', '/cancel'))
                    for method, path, _ in provider[1].requests)
     assert cloud_registry.sessions[task.session_id].remote.get('resumable') is not False
+
+
+@pytest.mark.parametrize('name', ['cursor', 'devin'])
+async def test_shutdown_handles_suppressed_http_cancellation(cloud_registry, provider, name, monkeypatch):
+    provider[1].cursor_status, provider[1].detail = 'RUNNING', 'working'
+    ready = asyncio.Event()
+    original = httpx2.AsyncClient.request
+    swallowed = False
+
+    async def request(client, method, url, **kwargs):
+        nonlocal swallowed
+        response = await original(client, method, url, **kwargs)
+        if method == 'GET' and not ready.is_set():
+            ready.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                swallowed = True
+        return response
+
+    monkeypatch.setattr(httpx2.AsyncClient, 'request', request)
+    monkeypatch.setattr('agent_bridge.registry.STOP_TASK_GRACE_SEC', 0.1)
+    dispatched = await cloud_registry.dispatch_task(name, 'keep remote alive')
+    await asyncio.wait_for(ready.wait(), 5)
+    await cloud_registry.stop()
+    assert swallowed
+    assert dispatched['task_id'] not in cloud_registry._bg
+    assert not any(method == 'DELETE' or path.endswith(('/archive', '/cancel'))
+                   for method, path, _ in provider[1].requests)
 
 
 @pytest.mark.parametrize('name', ['cursor', 'devin'])

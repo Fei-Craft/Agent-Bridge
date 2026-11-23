@@ -14,14 +14,17 @@ from unittest.mock import AsyncMock
 import httpx2
 import pytest
 from pydantic import ValidationError
+from starlette.requests import Request
 
 from agent_bridge import cli
+from agent_bridge.adapters.fake import FakeAdapter
 from agent_bridge.config import AgentConfig, HubConfig, RemoteConfig, load_config
 from agent_bridge.hub import create_app
 from agent_bridge.models import ProcState, Session, Task, TaskStatus
 from agent_bridge.registry import Registry
-from agent_bridge.remote import create_remote_app
+from agent_bridge.remote import Approval, create_remote_app
 from agent_bridge.tunnel import run_tunnel
+from agent_bridge.worker_env import build_worker_env
 
 
 @pytest.fixture
@@ -48,6 +51,26 @@ async def gateway(bridge_home, tmp_path):
 
 def payload(**kwargs):
     return {'agent': 'fake', 'message': 'hello', 'workspace': 'project', **kwargs}
+
+
+async def test_remote_workers_never_receive_admin_credentials(gateway, monkeypatch):
+    client, registry, _, _ = gateway
+    registry.deliveries.worker_context = {'AGENT_BRIDGE_HUB_URL': 'http://admin', 'AGENT_BRIDGE_HUB_TOKEN': 'unrestricted-admin'}
+    monkeypatch.setenv('AGENT_BRIDGE_HUB_TOKEN', 'inherited-admin')
+    monkeypatch.setenv('AGENT_BRIDGE_HUB_URL', 'http://admin')
+    captured = []
+    original = FakeAdapter.run_turn
+
+    async def run(adapter, session, task):
+        captured.append(build_worker_env(worker_context=True))
+        return await original(adapter, session, task)
+
+    monkeypatch.setattr(FakeAdapter, 'run_turn', run)
+    result = (await client.post('/v1/agents/fake/invoke', json=payload())).json()
+    assert result['ok']
+    assert 'AGENT_BRIDGE_HUB_TOKEN' not in captured[0]
+    assert 'AGENT_BRIDGE_HUB_URL' not in captured[0]
+    assert captured[0]['AGENT_BRIDGE_HUB'] == 'off'
 
 
 def test_remote_config_validation(tmp_path):
@@ -81,7 +104,8 @@ async def test_dispatch_invoke_status_result_cancel_and_audit(gateway, monkeypat
     assert (await client.post('/v1/tasks/' + running['task_id'] + '/cancel', json={})).json()['ok']
     await registry.flush_state()
     audit = registry.home / 'remote-audit.jsonl'
-    assert audit.stat().st_mode & 0o777 == 0o600
+    if os.name != 'nt':
+        assert audit.stat().st_mode & 0o777 == 0o600
     records = [json.loads(line) for line in audit.read_text().splitlines()]
     assert records[0]['token_id'] == hashlib.sha256(token.encode()).hexdigest()[:12]
     assert records[0]['workspace'] == 'project' and records[0]['outcome'] == 'accepted'
@@ -223,6 +247,74 @@ async def test_approval_expiry(gateway):
     scope.expires = time.time() + 0.02
     assert (await client.post('/v1/tasks', json=payload())).status_code == 403
     assert not registry.remote.approvals
+
+
+async def test_full_approval_message_is_visible(gateway):
+    _, registry, scope, _ = gateway
+    message = 'safe-looking prefix ' * 100 + 'DESTRUCTIVE SUFFIX MUST BE VISIBLE'
+    registry.remote.approvals['approval_long'] = Approval('approval_long', scope, 'fake', 'project', message)
+    assert registry.remote.list_approvals()['approvals'][0]['message'] == message
+
+
+async def test_unauthenticated_audit_is_rate_limited(gateway):
+    client, registry, _, _ = gateway
+    for _ in range(50):
+        assert (await client.get('/unknown')).status_code == 404
+    assert len((registry.home / 'remote-audit.jsonl').read_text().splitlines()) <= 20
+
+
+async def test_audit_storage_is_bounded(gateway, monkeypatch):
+    _, registry, scope, _ = gateway
+    monkeypatch.setattr('agent_bridge.remote.AUDIT_MAX_BYTES', 1024, raising=False)
+    request = Request({'type': 'http', 'headers': [], 'client': ('127.0.0.1', 1)})
+    for _ in range(50):
+        registry.remote.audit(request, 'dispatch', scope, 'fake', 'project', 'accepted')
+    files = list(registry.home.glob('remote-audit.jsonl*'))
+    assert len(files) <= 2
+    assert all(path.stat().st_size <= 1024 for path in files)
+    if os.name != 'nt':
+        assert all(path.stat().st_mode & 0o777 == 0o600 for path in files)
+
+
+async def test_shallow_caller_cannot_reset_saved_session_depth(gateway, tmp_path):
+    _, registry, scope, _ = gateway
+    caller = registry.sessions[scope.session_id]
+    first = await registry.dispatch_task('fake', 'deep', cwd=str(tmp_path))
+    await registry.wait_task(first['task_id'], 5)
+    session = registry.sessions[first['session_id']]
+    session.call_depth = 3
+    caller.call_depth = 0
+    resumed = await registry.dispatch_task(
+        'fake', 'resume', cwd=str(tmp_path), session_id=session.session_id,
+        caller_session_id=caller.session_id,
+    )
+    assert registry.tasks[resumed['task_id']].call_depth == 3
+    assert session.call_depth == 3
+
+
+async def test_shutdown_releases_pending_approvals(gateway, monkeypatch):
+    client, registry, _, _ = gateway
+    registry.config.hub.remote.require_approval = True
+    ready = asyncio.Event()
+    original = registry.remote.approve
+
+    async def approve(*args):
+        ready.set()
+        await original(*args)
+
+    monkeypatch.setattr(registry.remote, 'approve', approve)
+    pending = asyncio.create_task(client.post('/v1/tasks', json=payload()))
+    try:
+        await asyncio.wait_for(ready.wait(), 2)
+        assert registry.remote.approvals
+        await registry.stop()
+        response = await asyncio.wait_for(pending, 0.2)
+        assert response.status_code == 403
+        assert not registry.remote.approvals
+        assert not any(task.agent == 'fake' for task in registry.tasks.values())
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
 
 
 async def test_chunked_body_limit_and_public_url_validation(gateway):

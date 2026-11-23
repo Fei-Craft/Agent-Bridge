@@ -15,6 +15,11 @@
 
 ### Central hub
 
+Run `agent-bridge ui` for the built-in Chinese local dashboard (`ui --no-open`
+prints a one-time login link). View tasks, transcripts, results, delivery status,
+agents and sessions; dispatch/cancel work and review gateway audit/approvals.
+Only the admin loopback listener serves `/ui`. See [Local dashboard](HUB.md#local-dashboard).
+
 Run `agent-bridge serve` once; coordinator MCP instances auto-proxy to its shared
 Registry. Any shell-capable agent can call peers with `agent-bridge ask` or
 `agent-bridge call`. `ask` / `invoke` wait until done by default; use explicit
