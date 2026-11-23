@@ -806,7 +806,10 @@ class AcpAdapter(Adapter):
                 client_info=Implementation(name="agent-bridge", version="0.1.0"),
                 client_capabilities=ClientCapabilities(),
             )
-            created = await live.conn.new_session(cwd=cwd, mcp_servers=[])
+            # Same session/new metadata as a dispatch with no model/effort, so
+            # the advertised catalog honors the restrictions dispatch sees.
+            probe = Session(session_id="model-discovery", agent=self.agent.name, cwd=cwd)
+            created = await self._call_new_session(live.conn, cwd, self._new_session_meta(probe))
             return _acp_model_catalog(created, self.agent.name)
         except Exception as exc:
             raise self._failure(

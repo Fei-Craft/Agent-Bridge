@@ -14,6 +14,7 @@ from acp.schema import (
 from agent_bridge.adapters import acp
 from agent_bridge.adapters.acp import AcpAdapter, AcpError, _acp_model_catalog, _Live
 from agent_bridge.config import AgentConfig
+from agent_bridge.models import Session
 
 
 class FakeConn:
@@ -79,7 +80,7 @@ def discovery(monkeypatch, tmp_path):
         adapter = AcpAdapter(
             AgentConfig(
                 name=name, protocol="acp", command=command or [name, "acp"],
-                session_meta={"yoloMode": True, "modelId": "must-not-select"},
+                session_meta={"yoloMode": True, "modelId": "configured"},
                 permission_policy="allow_always", **kwargs,
             ),
             tmp_path / "home",
@@ -176,7 +177,9 @@ async def test_private_handshake_never_prompts_configures_or_persists(discovery)
     result = await adapter.list_models("workspace-directory")
     assert result["models"][0]["id"] == "a"
     assert [name for name, _ in discovery.conn.calls] == ["initialize", "new_session", "close"]
-    assert discovery.conn.calls[1][1] == {"cwd": "workspace-directory", "mcp_servers": []}
+    assert discovery.conn.calls[1][1] == {
+        "cwd": "workspace-directory", "mcp_servers": [], "yoloMode": True, "modelId": "configured",
+    }
     assert discovery.spawns[0][1]["cwd"] == "process-directory"
     assert discovery.spawns[0][1]["env"] == {"SAFE": "yes"}
     assert discovery.reaped == [discovery.proc]
@@ -372,3 +375,36 @@ async def test_claude_catalog_uses_current_model_effort(discovery):
     assert [name for name, _ in discovery.conn.calls] == ["initialize", "new_session", "close"]
     assert adapter._live == {"existing-session": active}
     assert discovery.reaped == [discovery.proc]
+
+
+async def test_claude_discovery_honors_session_meta_model_allowlist(discovery):
+    """The probe sends dispatch's session/new metadata, so only allowed models are listed."""
+    adapter, _active = discovery.build("claude")
+    allowed = {"sonnet"}
+    adapter.agent.session_meta = {"_meta": {"claudeCode": {"options": {"availableModels": sorted(allowed)}}}}
+    catalog = [{"value": "opus", "name": "Opus"}, {"value": "sonnet", "name": "Sonnet"}]
+
+    async def new_session(**kwargs):
+        await discovery.conn._call("new_session", kwargs)
+        meta = kwargs.get("_meta", {}).get("claudeCode", {}).get("options", {})
+        only = set(meta.get("availableModels") or [c["value"] for c in catalog])
+        choices = [c for c in catalog if c["value"] in only]
+        return snapshot(select_option("model", choices[0]["value"], choices, category="model"))
+
+    discovery.conn.new_session = new_session
+    result = await adapter.list_models(".")
+    assert {m["id"] for m in result["models"]} == allowed
+    dispatch = adapter._new_session_meta(Session(session_id="s", agent="claude", cwd="."))
+    sent = dict(discovery.conn.calls[1][1])
+    assert sent.pop("cwd") == "." and sent.pop("mcp_servers") == []
+    assert sent == dispatch
+
+
+@pytest.mark.parametrize("name", ["claude", "grok", "kimi"])
+async def test_discovery_meta_matches_default_dispatch(discovery, name):
+    adapter, _active = discovery.build(name)
+    discovery.conn.response = snapshot(select_option("model", "a", [{"value": "a", "name": "A"}]))
+    await adapter.list_models(".")
+    sent = dict(discovery.conn.calls[1][1])
+    del sent["cwd"], sent["mcp_servers"]
+    assert sent == adapter._new_session_meta(Session(session_id="s", agent=name, cwd="."))
