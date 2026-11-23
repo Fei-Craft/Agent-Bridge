@@ -273,6 +273,22 @@ async def test_audit_storage_is_bounded(gateway, monkeypatch):
     assert all(path.stat().st_size <= 1024 and path.stat().st_mode & 0o777 == 0o600 for path in files)
 
 
+async def test_shallow_caller_cannot_reset_saved_session_depth(gateway, tmp_path):
+    _, registry, scope, _ = gateway
+    caller = registry.sessions[scope.session_id]
+    first = await registry.dispatch_task('fake', 'deep', cwd=str(tmp_path))
+    await registry.wait_task(first['task_id'], 5)
+    session = registry.sessions[first['session_id']]
+    session.call_depth = 3
+    caller.call_depth = 0
+    resumed = await registry.dispatch_task(
+        'fake', 'resume', cwd=str(tmp_path), session_id=session.session_id,
+        caller_session_id=caller.session_id,
+    )
+    assert registry.tasks[resumed['task_id']].call_depth == 3
+    assert session.call_depth == 3
+
+
 async def test_chunked_body_limit_and_public_url_validation(gateway):
     client, registry, _, _ = gateway
     registry.remote.config.max_body_bytes = 10

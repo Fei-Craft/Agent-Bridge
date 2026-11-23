@@ -841,7 +841,7 @@ class Registry:
             session.last_active_at = iso()
             session.remote_origin = session.remote_origin or remote_origin
             if caller_session_id:
-                session.call_depth = depth
+                session.call_depth = max(session.call_depth, depth)
             task = Task(
                 call_depth=session.call_depth,
                 task_id=_new_id("task"),
