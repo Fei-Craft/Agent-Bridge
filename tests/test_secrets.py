@@ -62,7 +62,8 @@ async def test_full_flow_no_plaintext_and_discovery(bridge_home, tmp_path, monke
         original = httpx2.AsyncClient
         monkeypatch.setattr(httpx2, 'AsyncClient', lambda **kw: original(transport=httpx2.ASGITransport(app=app), **kw))
         assert (await discover(bridge_home)).token == token
-        task = await registry.dispatch_task('fake', f'{token} {callback} {key}', cwd=str(tmp_path), callback_url='http://listener', callback_secret=callback)
+        secrets.store_callback_secret('test', callback)
+        task = await registry.dispatch_task('fake', f'{token} {callback} {key}', cwd=str(tmp_path), callback_url='http://listener', callback_secret_name='test')
         await registry.wait_task(task['task_id'], timeout_sec=5)
         append_event(task['session_id'], 'raw', {'value': [token, callback, key]}, bridge_home)
         flush_pending(bridge_home)
@@ -90,7 +91,8 @@ async def test_migration_and_unsigned_restart_refused(bridge_home, tmp_path, mon
     await registry.start()
     await registry.deliveries.stop()
     try:
-        response = await registry.dispatch_task('fake', 'hello', cwd=str(tmp_path), callback_url='http://listener', callback_secret='lost-callback-credential' * 2)
+        secrets.store_callback_secret('test', 'lost-callback-credential' * 2)
+        response = await registry.dispatch_task('fake', 'hello', cwd=str(tmp_path), callback_url='http://listener', callback_secret_name='test')
         await registry.wait_task(response['task_id'], timeout_sec=5)
         task = registry.tasks[response['task_id']]
     finally:

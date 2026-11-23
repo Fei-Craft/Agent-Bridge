@@ -116,6 +116,8 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                     if body:
                         args.update(json.loads(body))
                 args.update(request.path_params)
+                if 'callback_secret' in args:
+                    raise ValueError('raw callback_secret is not accepted; use callback_secret_name from the keyring')
                 if caller is not None:
                     if tool in {'check_task', 'wait_task', 'get_result', 'cancel_task'}:
                         task = registry.tasks.get(args.get('task_id', ''))
@@ -147,7 +149,7 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                     if caller_task and caller_task.notification_source_task_id:
                         args['notify_caller'] = False
                         args.pop('callback_url', None)
-                        args.pop('callback_secret', None)
+                        args.pop('callback_secret_name', None)
                     depth = registry.sessions[caller].call_depth + 1
                     if depth > registry.config.hub.max_depth:
                         raise ValueError('hub max_depth exceeded')

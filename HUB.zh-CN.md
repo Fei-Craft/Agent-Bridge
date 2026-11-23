@@ -68,7 +68,9 @@ Ctrl-C 仅停止等待，并打印取结果命令。Worker 的 stall/turn 限制
 需要像工具一样直接拿结果时用 MCP `invoke_agent`，会周期发送 progress。
 部分客户端即便收到 progress 也有工具总时限，此时用异步 dispatch 或分段 wait。
 Worker 中 `ask --async` 默认 notify_caller=true，立即返回 task ID。
-REST/MCP dispatch 支持 `notify_caller`、`callback_url` 和可选 `callback_secret`。
+REST/MCP dispatch 支持 `notify_caller`、`callback_url` 和可选 `callback_secret_name`。
+原始 callback_secret 被拒绝；用 `agent-bridge callback-secret set 名称` 隐藏输入，
+`list` / `delete 名称` 管理。`ask --callback-secret` 仅发送临时引用，需要共享安全 keyring。
 没有 Hub worker caller session 的 notify_caller 会明确拒绝；顶层协调器可用回调或轮询。
 
 回推会在 caller 空闲后按 dispatch 顺序作为新一轮消息交付，包含 callee/task/status、

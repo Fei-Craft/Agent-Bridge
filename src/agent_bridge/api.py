@@ -82,7 +82,7 @@ class BridgeService:
         ref: str | None = None,
         notify_caller: bool = False,
         callback_url: str | None = None,
-        callback_secret: str | None = None,
+        callback_secret_name: str | None = None,
     ) -> dict[str, Any]:
         """Start a worker turn. Local workers require an absolute existing cwd. Cloud workers ignore cwd and accept optional repo/ref overrides; follow-ups keep their repository/ref. Cloud Cursor model is a model ID; Devin model is a mode, or effort maps off/low/medium/high/max to fast/lite/normal/ultra/ultra. Remote results carry provider IDs, URLs and PRs rather than local file changes. Cancelling Devin terminates the remote session permanently. Local model/effort behavior is unchanged. Pass session_id to continue. Set user_requested=true only when the user explicitly asked for a worker (required in manual mode). Rejected when coordinator.dispatch_enabled is false. For retry deduplication, supply a UUID request_id on the first call and replay the same ID and original arguments; identical retries reuse the task, different arguments are rejected. Bindings are lost on restart and are not shared with other instances. Returns immediately."""
         try:
@@ -101,7 +101,7 @@ class BridgeService:
                 notify_caller=notify_caller,
                 caller_session_id=caller_session_context.get(),
                 callback_url=callback_url,
-                callback_secret=callback_secret,
+                callback_secret_name=callback_secret_name,
             )
             return {"ok": True, **result}
         except Exception as exc:

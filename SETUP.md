@@ -666,6 +666,12 @@ and billing intact. Explicitly cancel or end_session to stop cloud work.
 
 ## Permissions
 
+Use `agent-bridge callback-secret set NAME` to enter a signing secret (>=32
+characters), then send `callback_secret_name=NAME` via REST/MCP/call or
+`ask --callback-secret-name NAME`. `list`/`delete NAME` manage those keyring entries.
+Raw `callback_secret` values are rejected. `ask --callback-secret` prompts and uses
+an ephemeral reference, requiring a shared secure keyring.
+
 The management listener accepts only loopback bind addresses. The old
 `--allow-remote` flag is rejected; never tunnel the admin listener.
 Hub discovery accepts only HTTP loopback (`127.0.0.0/8`, `::1`, `localhost`)

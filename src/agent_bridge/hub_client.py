@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 import ipaddress
+import json
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -51,6 +52,8 @@ class HubClient:
             return _error(exc)
 
     async def _call(self, tool: str, **kwargs: Any) -> dict[str, Any]:
+        if 'callback_secret' in kwargs:
+            raise ValueError('raw callback_secret is not accepted; use callback_secret_name from the keyring')
         if tool == 'invoke':
             timeout = kwargs.pop('timeout_sec', None)
             if timeout is not None and timeout < 0:
@@ -96,10 +99,8 @@ async def discover(home: Path | None = None) -> HubClient | None:
             url = info['url']
         parsed = urlsplit(str(url))
         loopback = parsed.hostname == 'localhost'
-        try:
+        with suppress(ValueError):
             loopback = loopback or ipaddress.ip_address(parsed.hostname or '').is_loopback
-        except ValueError:
-            pass
         if (not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment
                 or parsed.scheme not in {'http', 'https'} or (parsed.scheme == 'http' and not loopback)):
             return None

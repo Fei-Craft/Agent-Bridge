@@ -186,8 +186,11 @@ agent-bridge ask codex 'Review' --cwd /absolute/project --async --callback-url h
 ```
 
 REST/MCP `dispatch_task` accepts `notify_caller`, `callback_url`, and optional
-`callback_secret`. The caller is identified by `X-Agent-Bridge-Caller` (set from
-`AGENT_BRIDGE_CALLER_SESSION` by the CLI/proxy); `notify_caller=true` without a
+`callback_secret_name` referencing the keyring; raw `callback_secret` is rejected.
+Use `agent-bridge callback-secret set NAME` (hidden input), `list`, or `delete NAME`.
+`ask --callback-secret` stores a temporary reference, not a secret in its request,
+and requires a shared secure keyring. The caller is bound to its worker bearer;
+`notify_caller=true` without a
 valid hub caller is rejected. Results become concise follow-up turns in that
 caller session, queued while busy, in dispatch order. They include agent/task
 IDs, status, result preview, files/remote PRs and fetch instructions. Delivery

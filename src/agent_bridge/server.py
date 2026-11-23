@@ -131,10 +131,13 @@ async def dispatch_task(
     ref: str | None = None,
     notify_caller: bool = False,
     callback_url: str | None = None,
+    callback_secret_name: str | None = None,
     callback_secret: str | None = None,
 ) -> dict[str, Any]:
     """Start a worker turn. Local workers require an absolute existing cwd. Cloud workers ignore cwd and accept optional repo/ref overrides; follow-ups keep their repository/ref. Cloud Cursor model is a model ID; Devin model is a mode, or effort maps off/low/medium/high/max to fast/lite/normal/ultra/ultra. Remote results carry provider IDs, URLs and PRs rather than local file changes. Cancelling Devin terminates the remote session permanently. Local model/effort behavior is unchanged. Pass session_id to continue. Set user_requested=true only when the user explicitly asked for a worker (required in manual mode). Rejected when coordinator.dispatch_enabled is false. For retry deduplication, supply a UUID request_id on the first call and replay the same ID and original arguments; identical retries reuse the task, different arguments are rejected. Bindings are lost on restart and are not shared with other instances. Returns immediately."""
-    return await _service(ctx).dispatch_task(agent=agent, message=message, cwd=cwd, session_id=session_id, model=model, effort=effort, title=title, user_requested=user_requested, request_id=request_id, repo=repo, ref=ref, notify_caller=notify_caller, callback_url=callback_url, callback_secret=callback_secret)
+    if callback_secret is not None:
+        return _error(ValueError('raw callback_secret is not accepted; use callback_secret_name from the keyring'))
+    return await _service(ctx).dispatch_task(agent=agent, message=message, cwd=cwd, session_id=session_id, model=model, effort=effort, title=title, user_requested=user_requested, request_id=request_id, repo=repo, ref=ref, notify_caller=notify_caller, callback_url=callback_url, callback_secret_name=callback_secret_name)
 
 
 @mcp.tool(annotations=READ_ONLY)

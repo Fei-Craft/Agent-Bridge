@@ -16,7 +16,7 @@ from agent_bridge.hub import create_app
 from agent_bridge.hub_client import HubClient
 from agent_bridge.models import TaskStatus
 from agent_bridge.registry import Registry
-from agent_bridge.secrets import callback_key, get
+from agent_bridge.secrets import callback_key, callback_secret_key, get, load_callback_secret, store_callback_secret
 
 
 @pytest.fixture
@@ -153,7 +153,8 @@ async def test_no_caller_invalid_callback_and_no_loops(registry, tmp_path):
         with pytest.raises(ValueError, match='HTTP'):
             await dispatch(registry, tmp_path, callback_url=url)
     with pytest.raises(ValueError, match='requires callback_url'):
-        await dispatch(registry, tmp_path, callback_secret='secret')
+        store_callback_secret('test', 's' * 32)
+        await dispatch(registry, tmp_path, callback_secret_name='test')
     caller = await dispatch(registry, tmp_path)
     delivery = await registry.dispatch_task('fake', 'result', cwd=str(tmp_path), session_id=caller.session_id,
         notification_source_task_id='source')
@@ -167,13 +168,57 @@ async def test_no_caller_invalid_callback_and_no_loops(registry, tmp_path):
 @pytest.mark.parametrize('secret', ['', 'short', 'x' * 31])
 async def test_callback_rejects_short_signing_secrets(registry, tmp_path, secret):
     with pytest.raises(ValueError, match='at least 32 characters'):
-        await dispatch(registry, tmp_path, callback_url='http://listener', callback_secret=secret)
+        store_callback_secret('test', secret)
+        await dispatch(registry, tmp_path, callback_url='http://listener', callback_secret_name='test')
     assert not registry.tasks
 
 
 async def test_callback_accepts_minimum_signing_secret(registry, tmp_path):
-    task = await dispatch(registry, tmp_path, callback_url='http://listener', callback_secret='x' * 32)
+    store_callback_secret('test', 'x' * 32)
+    task = await dispatch(registry, tmp_path, callback_url='http://listener', callback_secret_name='test')
     assert get(callback_key(registry.home, task.task_id)) == 'x' * 32
+
+
+async def test_missing_callback_secret_reference_rejected(registry, tmp_path):
+    with pytest.raises(ValueError, match='not found'):
+        await dispatch(registry, tmp_path, callback_url='http://listener', callback_secret_name='missing')
+    assert not registry.tasks
+
+
+async def test_raw_callback_secret_rejected_on_public_surfaces(registry, tmp_path):
+    app = create_app(registry, token='test')
+    async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url='http://hub',
+            headers={'Authorization': 'Bearer test'}) as client:
+        response = await client.post('/v1/tasks', json={'agent': 'fake', 'message': 'work', 'cwd': str(tmp_path),
+            'callback_url': 'http://listener', 'callback_secret': 'x' * 32})
+        assert response.status_code == 400 and 'use callback_secret_name' in response.json()['error']
+    result = await HubClient('http://hub').call('dispatch_task', callback_secret='x' * 32)
+    assert not result['ok'] and 'use callback_secret_name' in result['error']
+    result = await server.dispatch_task(None, 'fake', 'work', callback_secret='x' * 32)
+    assert not result['ok'] and 'use callback_secret_name' in result['error']
+    assert not registry.tasks
+
+
+def test_callback_secret_cli_and_ephemeral_ask(monkeypatch, capsys):
+    monkeypatch.setattr('agent_bridge.secrets.prompt_secret', lambda _: 's' * 32)
+    cli.main(['callback-secret', 'set', 'receiver'])
+    cli.main(['callback-secret', 'list'])
+    output = capsys.readouterr().out
+    assert 'receiver' in output and 's' * 32 not in output
+    captured = []
+
+    async def call(tool, **kwargs):
+        assert 'callback_secret' not in kwargs
+        name = kwargs['callback_secret_name']
+        captured.append(name)
+        assert load_callback_secret(name) == 's' * 32
+        return {'ok': True, 'task_id': 'task-test'}
+
+    monkeypatch.setattr('agent_bridge.hub_client.discover', AsyncMock(return_value=types.SimpleNamespace(call=call)))
+    cli.main(['ask', 'fake', 'work', '--async', '--callback-url', 'http://listener', '--callback-secret'])
+    assert get(callback_secret_key(captured[0])) is None
+    cli.main(['callback-secret', 'delete', 'receiver'])
+    assert get(callback_secret_key('receiver')) is None
 
 
 @pytest.mark.parametrize('failures', [0, 2, 4])
@@ -190,7 +235,8 @@ async def test_callback_signature_retries_and_failure(registry, tmp_path, monkey
         return httpx2.Response(503 if len(requests) <= failures else 200)
 
     monkeypatch.setattr('agent_bridge.delivery.httpx2.AsyncClient', lambda **kwargs: real_client(transport=httpx2.MockTransport(handler), **kwargs))
-    task = await dispatch(registry, tmp_path, callback_url='http://listener/result', callback_secret='hidden-callback-secret' * 2)
+    store_callback_secret('test', 'hidden-callback-secret' * 2)
+    task = await dispatch(registry, tmp_path, callback_url='http://listener/result', callback_secret_name='test')
     assert get(callback_key(registry.home, task.task_id)) is not None
     assert not (registry.home / 'callback-secrets').exists()
     for _ in range(4):
@@ -226,7 +272,8 @@ async def test_restart_pending_and_bridge_restarted(registry, tmp_path):
 
 
 async def test_restart_signed_callback(registry, tmp_path, monkeypatch):
-    task = await dispatch(registry, tmp_path, callback_url='http://listener', callback_secret='restart-secret' * 3)
+    store_callback_secret('test', 'restart-secret' * 3)
+    task = await dispatch(registry, tmp_path, callback_url='http://listener', callback_secret_name='test')
     registry.save()
     await registry.flush_state()
     real_client = httpx2.AsyncClient

@@ -52,7 +52,7 @@ from agent_bridge.persist import (
 from agent_bridge.probes import probe_agent
 from agent_bridge.processes import count_sibling_servers, owner_alive, process_create_time, reap_orphans
 from agent_bridge.quota import QuotaCache, fetch_quota, looks_like_quota_error, provider_table, unknown_quota
-from agent_bridge.secrets import cloud_key, migrate, redact
+from agent_bridge.secrets import cloud_key, load_callback_secret, migrate, redact
 from agent_bridge.transcript import (
     append_event,
     flush_pending,
@@ -734,7 +734,7 @@ class Registry:
         notify_caller: bool = False,
         caller_session_id: str | None = None,
         callback_url: str | None = None,
-        callback_secret: str | None = None,
+        callback_secret_name: str | None = None,
         notification_source_task_id: str | None = None,
         remote_origin: bool = False,
     ) -> dict:
@@ -751,7 +751,8 @@ class Registry:
         if not notification_source_task_id and depth > min(3, self.config.hub.max_depth):
             raise ValueError('hub max_depth exceeded')
         if caller_task and caller_task.notification_source_task_id:
-            notify_caller, callback_url, callback_secret = False, None, None
+            notify_caller, callback_url, callback_secret_name = False, None, None
+        callback_secret = load_callback_secret(callback_secret_name)
         validate_callback(callback_url, callback_secret)
         if notify_caller and (not caller_session_id or caller_session_id not in self.sessions):
             raise ValueError('notify_caller requires a hub worker caller session')
@@ -787,8 +788,8 @@ class Registry:
         request: tuple = (agent, message, resolved_cwd, session_id, model, effort, title, user_requested)
         if cloud:
             request += (repo, ref)
-        legacy_request = request if not any((notify_caller, caller_session_id, callback_url, callback_secret)) else None
-        request += (notify_caller, caller_session_id, callback_url, callback_secret)
+        legacy_request = request if not any((notify_caller, caller_session_id, callback_url, callback_secret_name)) else None
+        request += (notify_caller, caller_session_id, callback_url, callback_secret_name)
         async with self._lock:
             if request_id is not None and request_id in self._requests:
                 previous_fp, task_id = self._requests[request_id]

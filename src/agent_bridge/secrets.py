@@ -121,6 +121,43 @@ def callback_key(home: Path, task_id: str) -> str:
     return 'callback:' + hashlib.sha256(str(home.resolve()).encode()).hexdigest() + ':' + task_id
 
 
+def callback_secret_key(name: str) -> str:
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', name):
+        raise ValueError('callback secret name must be 1-100 letters, digits, dots, underscores or hyphens')
+    return 'callback-secret:' + name
+
+
+def load_callback_secret(name: str | None) -> str | None:
+    if name is None:
+        return None
+    value = get(callback_secret_key(name))
+    if value is None:
+        raise ValueError('callback_secret_name not found in keyring')
+    if len(value) < 32:
+        raise ValueError('callback signing secret must contain at least 32 characters')
+    return value
+
+
+def callback_secret_names() -> list[str]:
+    return json.loads(get('callback-secret-names') or '[]')
+
+
+def store_callback_secret(name: str, value: str, *, ephemeral: bool = False) -> bool:
+    key = callback_secret_key(name)
+    if len(value) < 32:
+        raise ValueError('callback signing secret must contain at least 32 characters')
+    stored = set_secret(key, value)
+    if not ephemeral:
+        set_secret('callback-secret-names', json.dumps(sorted(set(callback_secret_names()) | {name})))
+    return stored
+
+
+def delete_callback_secret(name: str, *, ephemeral: bool = False) -> None:
+    delete(callback_secret_key(name))
+    if not ephemeral:
+        set_secret('callback-secret-names', json.dumps([n for n in callback_secret_names() if n != name]))
+
+
 def cloud_key(provider: str, env_name: str) -> str | None:
     value = get('cloud:' + provider)
     if value:

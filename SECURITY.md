@@ -57,6 +57,13 @@ injection; they do not constrain what tools an agent can execute.
 
 ## Remote token lifetime
 
+Callback signing secrets are passed by keyring reference (`callback_secret_name`),
+never as REST/MCP/call values. `agent-bridge callback-secret set NAME` prompts
+securely; `list` prints names only and `delete NAME` removes the entry.
+`ask --callback-secret` creates a short-lived keyring reference and cleans it up
+after dispatch; it refuses memory-only storage that another process cannot read.
+Signing secrets require at least 32 characters. Tasks keep only a signed boolean.
+
 Remote gateway tokens expire after 3600 seconds by default, independent of cloud
 turn timeouts (`hub.remote.token_ttl_sec` overrides this). The token is included
 in the cloud prompt and remains in provider-side session history; protect that
