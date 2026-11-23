@@ -110,6 +110,13 @@ class CodexAdapter(Adapter):
     async def run_turn(self, session: Session, task: Task) -> TurnResult:
         if task.previous_call_id and not session.native_session_id:
             raise RuntimeError("native session is missing and cannot be resumed")
+        prompt = task.message
+        if task.native_search:
+            prompt = (
+                "Codex CLI may omit structured source URLs from search events. Use native page retrieval "
+                "to open at least one relevant result page before answering. A URL in the answer alone "
+                "is not native source evidence.\n\n" + prompt
+            )
         env = self._worker_env()
         cmd = self._build_cmd(session, task, env)
         env = self._enforce_spawn_env(env)
@@ -119,7 +126,7 @@ class CodexAdapter(Adapter):
         append_event(
             session.session_id,
             "prompt_sent",
-            {"text": task.message, "cmd": cmd[:8]},
+            {"text": prompt, "cmd": cmd[:8]},
             self.home,
         )
         proc = await asyncio.create_subprocess_exec(
@@ -149,7 +156,7 @@ class CodexAdapter(Adapter):
         observed_model = task.model or session.model
         observed_effort = codex_effort(task.effort or session.effort)
         try:
-            await self._write_prompt(proc, task.message)
+            await self._write_prompt(proc, prompt)
             assert proc.stdout is not None
             while True:
                 try:

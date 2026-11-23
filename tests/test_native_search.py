@@ -80,14 +80,15 @@ async def test_codex_search_replay_continuation_and_sources_survive_restart(tmp_
         "import json, os, pathlib, sys\n"
         "assert 'AGENT_BRIDGE_HUB_TOKEN' not in os.environ\n"
         "assert os.environ['AGENT_BRIDGE_HUB'] == 'off'\n"
-        "sys.stdin.read()\n"
+        "assert 'open at least one relevant result page' in sys.stdin.read()\n"
         "with pathlib.Path('search-submissions.log').open('a') as log:\n"
         "    log.write(('resume' if 'resume' in sys.argv else 'new') + '\\n')\n"
         "events = [\n"
         "  {'type':'thread.started','thread_id':'thread_search'},\n"
         "  {'type':'item.completed','item':{'type':'web_search','id':'search_native',\n"
-        "   'action':{'type':'search'},'results':[{'type':'text_result','url':'https://example.org/native',\n"
-        "   'title':'Native source'}]}},\n"
+        "   'action':{'type':'search','query':'offline search'}}},\n"
+        "  {'type':'item.completed','item':{'type':'web_search','id':'native_page',\n"
+        "   'action':{'type':'open_page','url':'https://example.org/native'}}},\n"
         "  {'type':'item.completed','item':{'type':'agent_message','text':'Offline search findings'}},\n"
         "  {'type':'turn.completed'},\n"
         "]\n"
@@ -108,9 +109,9 @@ async def test_codex_search_replay_continuation_and_sources_survive_restart(tmp_
         assert result["status"] == "completed"
         assert not result["pending"] and result["persisted"]
         assert result["sources"] == [{
-            "title": "Native source", "url": "https://example.org/native", "tool_call_id": "search_native",
+            "title": "https://example.org/native", "url": "https://example.org/native", "tool_call_id": "native_page",
         }]
-        assert result["native_calls"] == {"search_native": "web_search"}
+        assert result["native_calls"] == {"search_native": "web_search", "native_page": "web_fetch"}
         assert result["result_text"] == "Offline search findings"
         assert registry.list_sessions() == []
         sid = registry.tasks[call["call_id"]].session_id
@@ -158,8 +159,14 @@ async def test_native_failed_state_flush_submits_zero_calls(tmp_path, monkeypatc
         await registry.stop()
 
 
-@pytest.mark.parametrize("action", ["search", "open_page"])
-async def test_pending_through_worker_cleanup_and_fetch_alone_fails(tmp_path, monkeypatch, action):
+@pytest.mark.parametrize(("action", "structured_results", "expected_status"), [
+    ("search", True, "completed"),
+    ("search", False, "failed"),
+    ("open_page", False, "failed"),
+])
+async def test_pending_through_worker_cleanup_and_requires_native_sources(
+    tmp_path, monkeypatch, action, structured_results, expected_status,
+):
     registry = Registry.create(tmp_path / "bridge", search_config(), runtime_context="coordinator")
     entered = asyncio.Event()
     gate = asyncio.Event()
@@ -167,10 +174,10 @@ async def test_pending_through_worker_cleanup_and_fetch_alone_fails(tmp_path, mo
     async def run_turn(self, session, task):
         observe_codex_search(task, {
             "id": "tool", "action": {"type": action, "url": "https://example.org/"},
-            "results": [{"type": "text_result", "url": "https://example.org/"}],
+            "results": [{"type": "text_result", "url": "https://example.org/"}] if structured_results else [],
         })
         session.native_session_id = "thread"
-        return TurnResult(text="Result")
+        return TurnResult(text="Prose claims a source at https://example.org/")
 
     async def shutdown(self, session):
         entered.set()
@@ -191,7 +198,7 @@ async def test_pending_through_worker_cleanup_and_fetch_alone_fails(tmp_path, mo
         gate.set()
         result = await service.get_capability_result(call["call_id"], wait_sec=5)
         assert not result["pending"]
-        assert result["status"] == ("completed" if action == "search" else "failed")
+        assert result["status"] == expected_status
     finally:
         gate.set()
         await registry.stop()
