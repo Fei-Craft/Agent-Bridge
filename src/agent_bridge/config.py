@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, model_validator
 
-from agent_bridge.models import Selection
+from agent_bridge.models import EffortSelection, Selection
 from agent_bridge.paths import bridge_home, bundled_agents_toml
 from agent_bridge.persist import atomic_write_text
 
@@ -180,7 +180,7 @@ class AgentConfig(BaseModel):
     config_overrides: list[str] = Field(default_factory=list)
     remote_allow_unsafe_permissions: bool = False
     remote_allowed_models: list[Selection] = Field(default_factory=list)
-    remote_allowed_efforts: list[Selection] = Field(default_factory=list)
+    remote_allowed_efforts: list[EffortSelection] = Field(default_factory=list)
 
     def unsafe_remote_permissions(self) -> bool:
         argv = [*self.command, *(arg for cmd in self.fallback_commands for arg in cmd),

@@ -50,6 +50,7 @@ compatibility remains unverified because cursor-agent is not installed here.
 
 Model/effort selections must match
 `^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]{0,99}$` (1–100 characters).
+Model IDs additionally allow non-leading `#` for MiniMax variants; effort does not.
 Remote requests may select only values explicitly listed under that agent's
 `remote_allowed_models` / `remote_allowed_efforts`; both default to empty lists.
 Omitting selections still uses the configured defaults. Local effort aliases

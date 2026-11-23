@@ -34,6 +34,19 @@ def test_cloud_model_selection_boundaries():
         assert CloudConfig(provider='devin', model=model).model == model
 
 
+def test_model_variant_hash_is_nonleading_and_not_effort():
+    from agent_bridge.models import Session, validate_selection
+
+    validate_selection('minimax/MiniMax-M3#1M', 'model')
+    assert CloudConfig(provider='devin', model='minimax/MiniMax-M3#1M').model
+    with pytest.raises(ValueError):
+        validate_selection('#model', 'model')
+    with pytest.raises(ValueError):
+        validate_selection('high#variant', 'effort')
+    with pytest.raises(ValidationError):
+        Session(session_id='test', agent='fake', cwd='.', effort='high#variant')
+
+
 def test_loads_bundled_agents():
     cfg = load_config(Path("."))
     assert "grok" in cfg.agents
