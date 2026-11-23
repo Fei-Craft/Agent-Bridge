@@ -1548,10 +1548,10 @@ class AcpAdapter(Adapter):
         """Apply advertised config without losing a tiered request on session reload."""
         if not uses_generic_acp_selection(self.agent) or live.conn is None or not session.native_session_id:
             return
-        requested_model = task.model if task is not None else None
-        model = requested_model or session.model
-        retained_tier = session.acp_model_tier if model == session.model else None
-        tier = retained_tier
+        selected_model = (task.model if task is not None else None) or session.model
+        inherits_model = (task is None or not task.model_explicit) and selected_model == session.model
+        tier = session.acp_model_tier if inherits_model else None
+        model = selected_model
         if model:
             model_option_id = next(iter(config_select_ids_for_category(live.config_options, "model")), "model")
             current, offered = config_option_values(live.config_options, model_option_id)
@@ -1566,12 +1566,10 @@ class AcpAdapter(Adapter):
                 ):
                     model, tier = family, suffix
                 await self._sync_model_option(live, session, model=model, option_id=model_option_id)
-                if live.applied_model == model:
-                    session.model = requested_model or session.model
-                    session.acp_model_tier = retained_tier
-                elif live.applied_model is not None:
-                    session.model = live.applied_model
-                    session.acp_model_tier = tier
+                if live.applied_model is not None:
+                    substituted = live.applied_model != model
+                    session.model = live.applied_model if substituted else selected_model
+                    session.acp_model_tier = tier if substituted or model == selected_model else None
         if task is not None and task.effort is not None:
             session.effort = task.effort
         effort = session.effort or tier

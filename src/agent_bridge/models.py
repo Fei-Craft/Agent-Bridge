@@ -141,6 +141,7 @@ class Task(BaseModel):
     ref: str | None = None
     remote: dict[str, Any] = Field(default_factory=dict)
     model: str | None = None
+    model_explicit: bool = Field(default=False, exclude=True)
     effort: str | None = None
     observed_model: str | None = None
     observed_effort: str | None = None

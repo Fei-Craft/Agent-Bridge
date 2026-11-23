@@ -243,7 +243,8 @@ async def test_generic_acp_uses_config_categories_with_custom_ids(hub, tmp_path)
     assert result['warnings'] == []
 
 
-async def test_generic_acp_substituted_model_keeps_inferred_effort_after_reload(hub, bridge_home, tmp_path):
+@pytest.mark.parametrize('reselect_model', [False, True])
+async def test_generic_acp_substituted_model_inferred_effort_after_reload(hub, bridge_home, tmp_path, reselect_model):
     client, registry = hub
     registry.config.agents['echo'] = AgentConfig(
         name='echo', protocol='acp', revivable=True,
@@ -257,6 +258,11 @@ async def test_generic_acp_substituted_model_keeps_inferred_effort_after_reload(
     assert (first['observed_model'], first['observed_effort']) == ('family', 'xhigh')
     assert "returned 'family'" in first['warnings'][0]
     session_id = first['session_id']
+    if reselect_model:
+        reselected = (await client.post(path, json={
+            **body, 'session_id': session_id, 'model': 'family',
+        })).json()
+        assert reselected['status'] == 'completed'
     session = registry.sessions[session_id]
     await registry._adapter_for(session).shutdown(session)
     persisted = json.loads((bridge_home / 'state.json').read_text(encoding='utf-8'))
@@ -265,7 +271,8 @@ async def test_generic_acp_substituted_model_keeps_inferred_effort_after_reload(
     follow_up = (await client.post(path, json={**body, 'session_id': session_id})).json()
     assert follow_up['status'] == 'completed'
     assert follow_up['result_text'] == 'loaded:hello'
-    assert (follow_up['observed_model'], follow_up['observed_effort']) == ('family', 'xhigh')
+    assert follow_up['observed_model'] == 'family'
+    assert follow_up['observed_effort'] == (None if reselect_model else 'xhigh')
     assert follow_up['warnings'] == []
 
 

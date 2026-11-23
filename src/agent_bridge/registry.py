@@ -859,6 +859,7 @@ class Registry:
                 remote={key: value for key, value in session.remote.items()
                         if key in {'provider', 'url', 'agent_id', 'session_id', 'devin_mode', 'resumable'}},
                 model=model or session.model,
+                model_explicit=bool(model),
                 effort=effort or session.effort,
                 status=TaskStatus.queued,
                 notify_caller=notify_caller,
