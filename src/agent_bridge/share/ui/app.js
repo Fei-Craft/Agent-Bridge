@@ -147,7 +147,7 @@ $('dispatch-form').addEventListener('submit', async event => {
   event.preventDefault();
   const form = event.target, submit = form.querySelector('[type=submit]');
   const fields = new FormData(form), agent = fields.get('agent');
-  const body = {agent, message: fields.get('message')};
+  const body = {agent, message: fields.get('message'), user_requested: true};
   for (const key of ['model', 'effort', 'cwd']) if (fields.get(key)?.trim()) body[key] = fields.get(key).trim();
   submit.disabled = true; $('dispatch-status').textContent = '正在派发…';
   try {

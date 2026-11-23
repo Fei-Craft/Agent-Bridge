@@ -141,6 +141,20 @@ async def test_ui_task_flow_and_redacted_audit(dashboard, tmp_path):
     assert (await client.get('/v1/agents', headers=UI)).json()['agents'][0]['protocol'] == 'fake'
 
 
+@pytest.mark.parametrize('route', ['/v1/tasks', '/v1/agents/fake/invoke'])
+async def test_explicit_dashboard_dispatch_in_manual_mode(dashboard, tmp_path, route):
+    client, _, registry = dashboard
+    registry.config.coordinator.mode = 'manual'
+    await login(client)
+    body = {'message': 'operator request', 'cwd': str(tmp_path)}
+    if route == '/v1/tasks':
+        body['agent'] = 'fake'
+    assert (await client.post(route, headers=UI, json=body)).status_code == 400
+    response = await client.post(route, headers=UI, json={**body, 'user_requested': True})
+    assert response.status_code == 200 and response.json()['ok']
+    assert 'user_requested: true' in (await client.get('/ui/app.js')).text
+
+
 def test_cli_open_and_no_open(monkeypatch, capsys):
     client = AsyncMock()
     client.call.return_value = {'ok': True, 'url': ORIGIN + '/ui#code=single-use'}
