@@ -78,6 +78,7 @@ class Provider(BaseHTTPRequestHandler):
     api_error = 0
     devin_id = 'devin-test'
     no_messages = False
+    structured_output: ClassVar[dict[str, Any] | None] = None
 
     def log_message(self, *args):
         pass
@@ -102,7 +103,7 @@ class Provider(BaseHTTPRequestHandler):
         session = {'session_id': cls.devin_id, 'url': 'https://app.devin.ai/s/test',
                    'status': cls.devin_status, 'status_detail': cls.detail, 'acus_consumed': 1.25,
                    'pull_requests': [{'pr_url': 'https://github.com/o/r/pull/2', 'pr_state': 'open'}],
-                   'structured_output': {'ok': True}}
+                   'structured_output': cls.structured_output if cls.structured_output is not None else {'ok': True}}
         if self.path == '/v1/agents':
             cls.turn += 1
             run['id'] = f'run-{cls.turn}'
@@ -398,6 +399,25 @@ async def test_secrets_redacted(cloud_registry, provider, bridge_home, monkeypat
         if path.is_file():
             assert b'fake-secret-' not in path.read_bytes()
     assert 'fake-secret-' not in caplog.text
+
+
+async def test_devin_structured_token_key_redacted_in_result_response_and_state(cloud_registry, provider):
+    token = 'abr_' + 's' * 43
+    provider[1].structured_output = {token: 'x'}
+    result = await turn(cloud_registry, 'devin')
+    assert result['remote']['structured_output'] == {'[REDACTED]': 'x'}
+    app = create_app(cloud_registry, token='structured-key-test-admin')
+    async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url='http://hub') as client:
+        response = await client.get('/v1/tasks/' + result['task_id'] + '/result',
+            headers={'Authorization': 'Bearer structured-key-test-admin'})
+    assert response.status_code == 200
+    assert response.json()['remote']['structured_output'] == {'[REDACTED]': 'x'}
+    assert token not in response.text and token not in json.dumps(result)
+    await cloud_registry.flush_state()
+    flush_pending(cloud_registry.home)
+    for path in cloud_registry.home.rglob('*'):
+        if path.is_file():
+            assert token.encode() not in path.read_bytes(), path
 
 
 async def test_probe_and_missing_credentials(provider, monkeypatch, cloud_registry):
