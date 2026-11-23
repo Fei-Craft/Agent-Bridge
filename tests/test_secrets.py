@@ -141,6 +141,23 @@ def test_migration_skips_unreadable_file_and_continues(bridge_home, monkeypatch)
     assert value not in good.read_text(encoding='utf-8')
 
 
+def test_json_redaction_preserves_keys(tmp_path):
+    secrets.remember('session_id')
+    path = tmp_path / 'state.json'
+    atomic_write_json(path, {'session_id': 'sess_good', 'data': {'session_id': 'session_id'}})
+    secrets.migrate(tmp_path)
+    assert json.loads(path.read_text()) == {
+        'session_id': 'sess_good', 'data': {'session_id': '[REDACTED]'},
+    }
+
+
+def test_short_secret_redaction_does_not_replace_substrings(tmp_path):
+    secrets.remember('id')
+    path = tmp_path / 'state.json'
+    atomic_write_json(path, {'task_id': 'task_valid', 'value': 'id'})
+    assert json.loads(path.read_text()) == {'task_id': 'task_valid', 'value': '[REDACTED]'}
+
+
 async def test_wait_preview_redacts_in_memory_credentials(bridge_home, tmp_path):
     credential = secrets.remember('private-wait-result-credential')
     registry = Registry.create(bridge_home)

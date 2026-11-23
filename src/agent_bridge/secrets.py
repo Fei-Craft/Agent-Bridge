@@ -39,10 +39,13 @@ def redact(value: Any) -> Any:
         value = re.sub(r'(?:abr|abu|abs)_[A-Za-z0-9_-]{43}', '[REDACTED]', value)
         for secret in sorted(_known, key=len, reverse=True):
             for form in (secret, json.dumps(secret, ensure_ascii=False)[1:-1], json.dumps(secret)[1:-1]):
-                value = value.replace(form, '[REDACTED]')
+                if len(secret) >= 8:
+                    value = value.replace(form, '[REDACTED]')
+                elif value == form:
+                    value = '[REDACTED]'
         return value
     if isinstance(value, dict):
-        return {redact(k): redact(v) for k, v in value.items()}
+        return {k: redact(v) for k, v in value.items()}
     if isinstance(value, list):
         return [redact(v) for v in value]
     return value
@@ -148,7 +151,7 @@ def migrate(home: Path) -> None:
             directory.rmdir()
         except OSError:
             log.warning('Could not remove legacy callback directory %s', directory)
-    from agent_bridge.persist import atomic_write_text
+    from agent_bridge.persist import atomic_write_json, atomic_write_text
 
     paths = [home / 'state.json', home / 'pids.json']
     for name in ('transcripts', 'results', 'logs'):
@@ -162,8 +165,13 @@ def migrate(home: Path) -> None:
         try:
             if path.is_file():
                 original = path.read_text(encoding='utf-8')
+                if path.suffix == '.json':
+                    payload = json.loads(original)
+                    if payload != redact(payload):
+                        atomic_write_json(path, payload)
+                    continue
                 cleaned = redact(original)
                 if original != cleaned:
                     atomic_write_text(path, cleaned)
-        except (OSError, UnicodeError):
+        except (OSError, ValueError):
             log.warning('Could not scrub legacy file %s', path)
