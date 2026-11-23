@@ -45,7 +45,7 @@ class HubClient:
 
     async def call(self, tool: str, **kwargs: Any) -> dict[str, Any]:
         try:
-            if self.manual_mode and tool in {'dispatch_task', 'invoke'} and not kwargs.get('user_requested'):
+            if self.manual_mode and tool in {'dispatch_task', 'invoke', 'create_baseline'} and not kwargs.get('user_requested'):
                 raise RuntimeError('coordinator mode is manual: retry with user_requested=true only when the user explicitly requested a worker')
             return await self._call(tool, **kwargs)
         except Exception as exc:
