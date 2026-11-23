@@ -72,6 +72,8 @@ class HubClient:
             response = await client.request(method, self.url + path, headers=headers,
                                             **options)
             result: dict[str, Any] = response.json()
+        if tool == 'set_preferences' and result.get('ok') and kwargs.get('mode') is not None:
+            self.manual_mode = result['coordinator']['mode'] == 'manual'
         if tool == 'list_agents':
             result.update(backend='hub', hub_url=self.url)
             if self.manual_mode and 'coordinator' in result:

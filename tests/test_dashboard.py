@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import json
+import os
 import shutil
 import subprocess
+from pathlib import Path
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
 
@@ -21,6 +21,13 @@ from agent_bridge.remote import create_remote_app
 ORIGIN = 'http://127.0.0.1:8765'
 UI = {'X-Agent-Bridge-UI': '1', 'Origin': ORIGIN}
 BEARER = {'Authorization': 'Bearer dashboard-admin-credential'}
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='Node is optional; required only for vanilla JS rendering tests')
+def test_dashboard_rendering():
+    result = subprocess.run(['node', '--test', str(Path(__file__).with_name('dashboard_ui.test.cjs'))],
+        capture_output=True, text=True, timeout=20, encoding='utf-8')
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.fixture
@@ -63,6 +70,9 @@ async def test_login_single_use_hashed_cookie_logout(dashboard):
     assert (await client.get('/ui/data', headers=UI)).json()['tasks'] == []
     for path in registry.home.rglob('*'):
         if path.is_file():
+            if os.name == 'nt' and path.name == 'hub.lock':
+                assert path.stat().st_size == 1
+                continue
             assert raw.encode() not in path.read_bytes()
             assert code.encode() not in path.read_bytes()
     response = await client.post('/ui/logout', headers=UI, json={})
@@ -150,57 +160,45 @@ async def test_ui_native_search_result_available_without_internal_transcript(das
     registry.sessions[sid] = Session(session_id=sid, agent="codex", cwd=str(tmp_path), native_search=True)
     registry.tasks[tid] = Task(
         task_id=tid, session_id=sid, agent="codex", cwd=str(tmp_path), message="Find public sources",
-        native_search=True, search_finalized=True, status=TaskStatus.completed, result_text="Search result",
+        native_search=True, search_finalized=True, status=TaskStatus.failed, result_text="Partial findings",
+        error="Search requires attributable sources.",
     )
     data = (await client.get('/ui/data', headers=UI)).json()
     assert data['tasks'][0]['native_search'] is True
     assert (await client.get(f'/v1/sessions/{sid}/transcript', headers=UI)).status_code == 400
-    assert (await client.get(f'/v1/tasks/{tid}/result', headers=UI)).json()['result_text'] == 'Search result'
-
-
-async def test_ui_renders_partial_result_and_error(dashboard, tmp_path):
-    node = shutil.which('node')
-    if node is None:
-        pytest.skip('Node.js is needed to execute dashboard JavaScript')
-    client, _, registry = dashboard
-    await login(client)
-    tid = 'task_failed_search'
-    registry.tasks[tid] = Task(
-        task_id=tid, session_id='sess_search', agent='codex', cwd=str(tmp_path), message='Find public sources',
-        native_search=True, search_finalized=True, status=TaskStatus.failed, result_text='Partial findings',
-        error='Search requires attributable sources.',
-    )
-    script = (await client.get('/ui/app.js')).text
     result = (await client.get(f'/v1/tasks/{tid}/result', headers=UI)).json()
-    run = await asyncio.to_thread(subprocess.run, [node, '-e', r"""
-const {script, result} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
-const vm = require('node:vm');
-const assert = require('node:assert/strict');
-const elements = new Map();
-const document = {
-  querySelectorAll: () => [],
-  getElementById(id) {
-    if (!elements.has(id)) elements.set(id, {addEventListener() {}});
-    return elements.get(id);
-  },
-};
-vm.runInNewContext(script.replace(/^initialize\(\);$/m, '') + `
-  api = async path => {
-    assert.match(path, /result[?]/);
-    return result;
-  };
-  (async () => {
-    await openTask({task_id: result.task_id, native_search: true});
-    assert.equal($('result').textContent, 'Partial findings');
-    assert.match($('detail-meta').textContent, /Search requires attributable sources/);
-    result.result_text = ' with details';
-    await loadResult(true);
-    assert.equal($('result').textContent, 'Partial findings with details');
-    assert.match($('detail-meta').textContent, /Search requires attributable sources/);
-  })();
-`, {assert, document, result, setInterval() {}});
-"""], input=json.dumps({'script': script, 'result': result}), text=True, capture_output=True, timeout=10, check=False)
-    assert run.returncode == 0, run.stderr
+    assert result['result_text'] == 'Partial findings'
+    assert result['error'] == 'Search requires attributable sources.'
+
+
+async def test_dashboard_workspace_paths_are_canonical(dashboard, tmp_path, monkeypatch):
+    client, _, registry = dashboard
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    project = tmp_path / 'project'
+    project.mkdir()
+    registry.config.hub.remote.remote_workspaces = {'project': '~/project/../project'}
+    await login(client)
+    workspaces = (await client.get('/ui/data', headers=UI)).json()['remote']['workspaces']
+    assert workspaces == {'project': str(project.resolve())}
+    response = await client.post('/v1/tasks', headers=UI, json={
+        'agent': 'fake', 'message': 'operator request', 'cwd': workspaces['project'], 'user_requested': True})
+    assert response.status_code == 200
+    assert registry.tasks[response.json()['task_id']].cwd == str(project.resolve())
+
+
+@pytest.mark.parametrize('route', ['/v1/tasks', '/v1/agents/fake/invoke'])
+async def test_explicit_dashboard_dispatch_in_manual_mode(dashboard, tmp_path, route):
+    client, _, registry = dashboard
+    registry.config.coordinator.mode = 'manual'
+    await login(client)
+    body = {'message': 'operator request', 'cwd': str(tmp_path)}
+    if route == '/v1/tasks':
+        body['agent'] = 'fake'
+    assert (await client.post(route, headers=UI, json=body)).status_code == 400
+    response = await client.post(route, headers=UI, json={**body, 'user_requested': True})
+    assert response.status_code == 200 and response.json()['ok']
+    assert 'user_requested: true' in (await client.get('/ui/app.js')).text
 
 
 def test_cli_open_and_no_open(monkeypatch, capsys):

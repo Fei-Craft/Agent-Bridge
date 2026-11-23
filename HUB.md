@@ -55,7 +55,8 @@ Use `agent-bridge secrets set cursor` or `set devin` (hidden `getpass` input),
 `agent-bridge secrets list` (presence only), and `agent-bridge secrets delete cursor`.
 Cloud keys are loaded at startup; restart after changing them. Explicit named
 environment variables remain a warned fallback. Never put credentials in config,
-shell history, argv, URLs or prompts. `ask --callback-secret` prompts securely.
+shell history, argv, URLs or prompts. `ask --callback-secret` prompts securely;
+callback signing secrets must contain at least 32 characters.
 
 On a headless/locked machine without a usable keyring, Bridge warns and retains
 secrets in RAM only: there is **no file fallback**. Independent CLI/MCP processes

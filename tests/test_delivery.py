@@ -164,6 +164,18 @@ async def test_no_caller_invalid_callback_and_no_loops(registry, tmp_path):
     await registry.wait_task(delivery['task_id'], timeout_sec=5)
 
 
+@pytest.mark.parametrize('secret', ['', 'short', 'x' * 31])
+async def test_callback_rejects_short_signing_secrets(registry, tmp_path, secret):
+    with pytest.raises(ValueError, match='at least 32 characters'):
+        await dispatch(registry, tmp_path, callback_url='http://listener', callback_secret=secret)
+    assert not registry.tasks
+
+
+async def test_callback_accepts_minimum_signing_secret(registry, tmp_path):
+    task = await dispatch(registry, tmp_path, callback_url='http://listener', callback_secret='x' * 32)
+    assert get(callback_key(registry.home, task.task_id)) == 'x' * 32
+
+
 @pytest.mark.parametrize('failures', [0, 2, 4])
 async def test_callback_signature_retries_and_failure(registry, tmp_path, monkeypatch, failures, caplog):
     requests = []
@@ -171,14 +183,14 @@ async def test_callback_signature_retries_and_failure(registry, tmp_path, monkey
 
     def handler(request):
         requests.append(request)
-        assert request.headers['X-Agent-Bridge-Signature'] == 'sha256=' + hmac.new(b'hidden-callback-secret', request.content, hashlib.sha256).hexdigest()
+        assert request.headers['X-Agent-Bridge-Signature'] == 'sha256=' + hmac.new(b'hidden-callback-secret' * 2, request.content, hashlib.sha256).hexdigest()
         payload = json.loads(request.content)
         assert payload['status'] == 'completed'
         assert payload['ok']
         return httpx2.Response(503 if len(requests) <= failures else 200)
 
     monkeypatch.setattr('agent_bridge.delivery.httpx2.AsyncClient', lambda **kwargs: real_client(transport=httpx2.MockTransport(handler), **kwargs))
-    task = await dispatch(registry, tmp_path, callback_url='http://listener/result', callback_secret='hidden-callback-secret')
+    task = await dispatch(registry, tmp_path, callback_url='http://listener/result', callback_secret='hidden-callback-secret' * 2)
     assert get(callback_key(registry.home, task.task_id)) is not None
     assert not (registry.home / 'callback-secrets').exists()
     for _ in range(4):
@@ -214,7 +226,7 @@ async def test_restart_pending_and_bridge_restarted(registry, tmp_path):
 
 
 async def test_restart_signed_callback(registry, tmp_path, monkeypatch):
-    task = await dispatch(registry, tmp_path, callback_url='http://listener', callback_secret='restart-secret')
+    task = await dispatch(registry, tmp_path, callback_url='http://listener', callback_secret='restart-secret' * 3)
     registry.save()
     await registry.flush_state()
     real_client = httpx2.AsyncClient
@@ -222,7 +234,7 @@ async def test_restart_signed_callback(registry, tmp_path, monkeypatch):
 
     def handler(request):
         received.append(request)
-        assert request.headers['X-Agent-Bridge-Signature'] == 'sha256=' + hmac.new(b'restart-secret', request.content, hashlib.sha256).hexdigest()
+        assert request.headers['X-Agent-Bridge-Signature'] == 'sha256=' + hmac.new(b'restart-secret' * 3, request.content, hashlib.sha256).hexdigest()
         return httpx2.Response(200)
 
     monkeypatch.setattr('agent_bridge.delivery.httpx2.AsyncClient', lambda **kwargs: real_client(transport=httpx2.MockTransport(handler), **kwargs))
