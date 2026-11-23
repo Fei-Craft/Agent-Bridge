@@ -668,6 +668,8 @@ and billing intact. Explicitly cancel or end_session to stop cloud work.
 
 The management listener accepts only loopback bind addresses. The old
 `--allow-remote` flag is rejected; never tunnel the admin listener.
+Hub discovery accepts only HTTP loopback (`127.0.0.0/8`, `::1`, `localhost`)
+or HTTPS URLs, without embedded credentials, query strings or fragments.
 
 Gateway `token_ttl_sec` defaults to 3600 seconds, not the cloud turn timeout.
 The bearer is included in cloud session history: treat provider history as

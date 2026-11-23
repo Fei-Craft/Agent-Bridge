@@ -363,10 +363,10 @@ async def test_discovery_and_proxy(hub, bridge_home, monkeypatch):
     discovered = await discover(bridge_home)
     assert discovered is not None
     assert (await discovered.call('list_sessions'))['ok']
-    monkeypatch.setenv('AGENT_BRIDGE_HUB_URL', 'http://env-hub')
+    monkeypatch.setenv('AGENT_BRIDGE_HUB_URL', 'https://env-hub')
     monkeypatch.setenv('AGENT_BRIDGE_HUB_TOKEN', 'test-token')
     discovered = await discover(bridge_home)
-    assert discovered.url == 'http://env-hub'
+    assert discovered.url == 'https://env-hub'
     async with server.lifespan(server.mcp) as backend:
         assert isinstance(backend, HubClient)
         ctx = types.SimpleNamespace(request_context=types.SimpleNamespace(lifespan_context=backend))
@@ -384,6 +384,34 @@ async def test_discovery_empty_and_unhealthy(bridge_home, monkeypatch):
     assert await discover(bridge_home) is None
     monkeypatch.setenv('AGENT_BRIDGE_HUB_URL', 'http://127.0.0.1:1')
     assert await discover(bridge_home) is None
+
+
+@pytest.mark.parametrize('source', ['env', 'file'])
+@pytest.mark.parametrize(('url', 'allowed'), [
+    ('http://127.0.0.1:8765', True), ('http://127.22.3.4', True),
+    ('http://[::1]:8765', True), ('http://localhost', True), ('https://hub.example', True),
+    ('http://hub.example', False), ('http://192.168.1.2', False), ('file:///etc/passwd', False),
+    ('https://user:password@hub.example', False), ('https://hub.example/#fragment', False),
+    ('http://localhost.evil.example', False), ('', False),
+])
+async def test_discovery_validates_url_before_sending_token(bridge_home, monkeypatch, source, url, allowed):
+    monkeypatch.delenv('AGENT_BRIDGE_HUB_URL', raising=False)
+    monkeypatch.setenv('AGENT_BRIDGE_HUB_TOKEN', 'test-secret')
+    if source == 'env':
+        monkeypatch.setenv('AGENT_BRIDGE_HUB_URL', url)
+    else:
+        bridge_home.mkdir(exist_ok=True)
+        (bridge_home / 'hub.json').write_text(json.dumps({'pid': os.getpid(), 'url': url}), encoding='utf-8')
+    sent = []
+    original = httpx2.AsyncClient
+
+    def handle(request):
+        sent.append(request)
+        return httpx2.Response(200, json={'ok': True})
+
+    monkeypatch.setattr(httpx2, 'AsyncClient', lambda **kwargs: original(transport=httpx2.MockTransport(handle), **kwargs))
+    assert (await discover(bridge_home) is not None) == allowed
+    assert bool(sent) == allowed
 
 
 async def test_mcp_proxy_honors_manual_host_mode(hub, monkeypatch, tmp_path):

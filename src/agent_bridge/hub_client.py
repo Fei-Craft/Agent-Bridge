@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx2
 import psutil
@@ -92,6 +94,16 @@ async def discover(home: Path | None = None) -> HubClient | None:
             if not psutil.pid_exists(int(info['pid'])):
                 return None
             url = info['url']
+        parsed = urlsplit(str(url))
+        loopback = parsed.hostname == 'localhost'
+        try:
+            loopback = loopback or ipaddress.ip_address(parsed.hostname or '').is_loopback
+        except ValueError:
+            pass
+        if (not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment
+                or parsed.scheme not in {'http', 'https'} or (parsed.scheme == 'http' and not loopback)):
+            return None
+        _ = parsed.port
         token = token or get(hub_key(home or bridge_home())) or ''
         async with httpx2.AsyncClient(trust_env=False, timeout=2) as client:
             response = await client.get(str(url).rstrip('/') + '/v1/health', headers={'Authorization': f'Bearer {token}'})
