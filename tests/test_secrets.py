@@ -146,13 +146,29 @@ def test_migration_skips_unreadable_file_and_continues(bridge_home, monkeypatch)
 
 
 def test_json_redaction_preserves_keys(tmp_path):
-    secrets.remember('session_id')
+    secrets.remember('id')
     path = tmp_path / 'state.json'
-    atomic_write_json(path, {'session_id': 'sess_good', 'data': {'session_id': 'session_id'}})
+    atomic_write_json(path, {'session_id': 'sess_good', 'data': {'session_id': 'id'}})
     secrets.migrate(tmp_path)
     assert json.loads(path.read_text()) == {
         'session_id': 'sess_good', 'data': {'session_id': '[REDACTED]'},
     }
+
+
+def test_structured_secret_keys_are_redacted_without_collisions(tmp_path):
+    token = 'abr_' + 'x' * 43
+    credential = secrets.remember('long-provider-credential-value')
+    payload = {'session_id': 'sess_good', 'remote': {'structured_output': {
+        token: 'first', credential: 'second', '[REDACTED]': 'normal', '[REDACTED-1]': 'reserved',
+    }}}
+    path = tmp_path / 'state.json'
+    atomic_write_json(path, payload)
+    content = path.read_text()
+    assert token not in content and credential not in content
+    output = json.loads(content)
+    assert output['session_id'] == 'sess_good'
+    assert sorted(output['remote']['structured_output'].values()) == ['first', 'normal', 'reserved', 'second']
+    assert secrets.redact({}) == {}
 
 
 def test_short_secret_redaction_does_not_replace_substrings(tmp_path):

@@ -34,18 +34,31 @@ def remember(value: str) -> str:
     return value
 
 
+def _redact_text(value: str, short_exact: bool = True) -> str:
+    value = re.sub(r'(?:abr|abu|abs)_[A-Za-z0-9_-]{43}', '[REDACTED]', value)
+    for secret in sorted(_known, key=len, reverse=True):
+        for form in (secret, json.dumps(secret, ensure_ascii=False)[1:-1], json.dumps(secret)[1:-1]):
+            if len(secret) >= 8:
+                value = value.replace(form, '[REDACTED]')
+            elif short_exact and value == form:
+                value = '[REDACTED]'
+    return value
+
+
 def redact(value: Any) -> Any:
     if isinstance(value, str):
-        value = re.sub(r'(?:abr|abu|abs)_[A-Za-z0-9_-]{43}', '[REDACTED]', value)
-        for secret in sorted(_known, key=len, reverse=True):
-            for form in (secret, json.dumps(secret, ensure_ascii=False)[1:-1], json.dumps(secret)[1:-1]):
-                if len(secret) >= 8:
-                    value = value.replace(form, '[REDACTED]')
-                elif value == form:
-                    value = '[REDACTED]'
-        return value
+        return _redact_text(value)
     if isinstance(value, dict):
-        return {k: redact(v) for k, v in value.items()}
+        result = {}
+        for key, item in value.items():
+            safe_key = _redact_text(key, short_exact=False) if isinstance(key, str) else key
+            if safe_key != key:
+                suffix = 1
+                while safe_key in value or safe_key in result:
+                    safe_key = f'[REDACTED-{suffix}]'
+                    suffix += 1
+            result[safe_key] = redact(item)
+        return result
     if isinstance(value, list):
         return [redact(v) for v in value]
     return value
