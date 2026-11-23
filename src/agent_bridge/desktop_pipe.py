@@ -15,6 +15,7 @@ from typing import Any, cast
 import pywintypes
 import win32api
 import win32con
+import win32event
 import win32file
 import win32pipe
 import win32security
@@ -102,7 +103,8 @@ def relay_stdio(home: Path) -> None:
     try:
         handle = win32file.CreateFile(
             _address(home, sid), win32con.GENERIC_READ | win32con.GENERIC_WRITE | win32con.READ_CONTROL,
-            0, None, win32con.OPEN_EXISTING, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, None,
+            0, None, win32con.OPEN_EXISTING,
+            win32con.FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, None,
         )
     except pywintypes.error:
         return
@@ -117,18 +119,25 @@ def relay_stdio(home: Path) -> None:
             msvcrt.setmode(stdin, os.O_BINARY)
 
         def upstream() -> None:
+            write = pywintypes.OVERLAPPED()
+            write.hEvent = win32event.CreateEvent(None, True, False, None)
             with contextlib.suppress(OSError, pywintypes.error):
                 while chunk := os.read(stdin, BUFFER_SIZE):
-                    win32file.WriteFile(handle, chunk)
+                    win32file.WriteFile(handle, chunk, write)
+                    win32file.GetOverlappedResult(handle, write, True)
             os._exit(0)
 
+        read = pywintypes.OVERLAPPED()
+        read.hEvent = win32event.CreateEvent(None, True, False, None)
+        buffer = win32file.AllocateReadBuffer(BUFFER_SIZE)
         threading.Thread(target=upstream, daemon=True).start()
         with contextlib.suppress(OSError, pywintypes.error):
             while True:
-                _, data = win32file.ReadFile(handle, BUFFER_SIZE)
-                if not data:
+                win32file.ReadFile(handle, buffer, read)
+                count = win32file.GetOverlappedResult(handle, read, True)
+                if not count:
                     break
-                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.write(buffer[:count])
                 sys.stdout.buffer.flush()
     finally:
         handle.Close()
