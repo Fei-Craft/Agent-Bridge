@@ -214,3 +214,30 @@ def test_cli_ask_missing_option_value(monkeypatch, capsys, option):
     assert exc.value.code == 2
     assert f'argument {option}: expected one argument' in capsys.readouterr().err
     discover.assert_not_awaited()
+
+
+async def test_list_models_route(hub, tmp_path, monkeypatch):
+    client, registry = hub
+    catalog = {'source': 'test', 'models': [{'id': 'm1'}], 'cached': False}
+    discover_models = AsyncMock(return_value=catalog)
+    monkeypatch.setattr(registry, 'list_models', discover_models)
+    response = await client.get('/v1/agents/kimi/models', params={'cwd': str(tmp_path), 'refresh': 'true'})
+    assert response.json() == {'ok': True, **catalog}
+    discover_models.assert_awaited_once_with('kimi', str(tmp_path), refresh=True)
+    assert (await client.get('/v1/agents/kimi/models?cwd=/x&refresh=yes')).status_code == 400
+    assert (await client.get('/v1/agents/kimi/models', headers={'Authorization': ''})).status_code == 401
+
+    app = client._transport.app
+    real_client = httpx2.AsyncClient
+    monkeypatch.setattr('agent_bridge.hub_client.httpx2.AsyncClient',
+                        lambda **kw: real_client(transport=httpx2.ASGITransport(app=app)))
+    via_client = await HubClient('http://hub', token='test-token').list_models(agent='kimi', cwd=str(tmp_path), refresh=False)
+    assert via_client['models'] == [{'id': 'm1'}]
+    discover_models.assert_awaited_with('kimi', str(tmp_path), refresh=False)
+
+
+async def test_list_models_unsupported(hub, tmp_path):
+    client, _ = hub
+    response = await client.get('/v1/agents/fake/models', params={'cwd': str(tmp_path)})
+    assert response.status_code == 400
+    assert 'model discovery is not implemented for fake' in response.json()['error']

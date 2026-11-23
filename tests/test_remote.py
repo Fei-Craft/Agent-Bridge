@@ -96,7 +96,7 @@ async def test_dispatch_invoke_status_result_cancel_and_audit(gateway, monkeypat
 @pytest.mark.parametrize('method,path', [
     ('GET', '/v1/health'), ('GET', '/v1/agents'), ('GET', '/v1/sessions'),
     ('GET', '/v1/sessions/sess_origin/transcript'), ('PUT', '/v1/preferences'),
-    ('GET', '/v1/approvals'), ('GET', '/v1/remote'), ('GET', '/v1/tasks'),
+    ('GET', '/v1/approvals'), ('GET', '/v1/remote'), ('GET', '/v1/tasks'), ('GET', '/v1/agents/fake/models'),
     ('OPTIONS', '/v1/tasks'), ('DELETE', '/v1/tasks/task_origin'), ('GET', '/v1/tasks/task_origin/wait'),
 ])
 async def test_admin_and_unknown_surface_404(gateway, method, path):

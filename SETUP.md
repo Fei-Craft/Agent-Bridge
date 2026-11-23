@@ -520,7 +520,10 @@ Supported workers and catalog sources:
 
 Discovery uses a separate worker process, closed after the lookup. ACP discovery
 denies permission requests and may leave an empty session in worker history.
-`list_models` is available when `coordinator.dispatch_enabled=true`.
+`list_models` is available when `coordinator.dispatch_enabled=true`. With a
+running hub, MCP clients forward it to the hub's loopback admin API
+(`GET /v1/agents/{agent}/models`), so every coordinator shares one cache; the
+remote gateway does not expose it.
 
 Result fields:
 

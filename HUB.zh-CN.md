@@ -153,7 +153,8 @@ message / Cursor follow-up run 发送结果；交付 turn 不增加深度、不�
 `agent-bridge approvals list`，再 `approve 审批ID` 或 `deny 审批ID`。
 审批随 token 过期，重启丢弃。管理端（远程网关不开放）REST：GET `/v1/approvals`、
 POST `/v1/approvals/{id}/approve` 或 `/deny`、GET `/v1/remote`、
-PUT `/v1/remote/public-url`（JSON public_url 字段）。
+PUT `/v1/remote/public-url`（JSON public_url 字段）、
+GET `/v1/agents/{agent}/models?cwd=绝对项目路径&refresh=false`（list_models，仅本机管理端）。
 
 remote-audit.jsonl 权限 0600，仅记录时间、哈希前缀、IP/有限 CF 元数据、路由、agent、
 workspace、结果，不记录请求消息、Authorization 或 JWT。CF IP/Ray 仅作参考，可能伪造。

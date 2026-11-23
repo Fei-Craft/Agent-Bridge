@@ -108,11 +108,8 @@ async def list_agents(ctx: Context) -> dict[str, Any]:
 
 @mcp.tool(annotations=READ_ONLY)
 async def list_models(ctx: Context, agent: str, cwd: str, refresh: bool = False) -> dict[str, Any]:
-    """List models advertised by a supported worker. Pass this conversation's absolute project directory as cwd. Results are cached per worker/project for one hour by default ([models] cache_sec); refresh=true requests an immediate update. default_model reports the query session's advertised default. supported_efforts reports worker-native levels: null means unknown, [] means explicitly no levels. For dispatch_task.effort, use off|low|medium|high|max for adapter mapping. Available when coordinator.dispatch_enabled=true."""
-    try:
-        return {"ok": True, **await _registry(ctx).list_models(agent, cwd, refresh=refresh)}
-    except Exception as exc:
-        return _error(exc)
+    """List models advertised by a supported worker. Pass this conversation's absolute project directory as cwd. Results are cached per worker/project for one hour by default ([models] cache_sec); refresh=true requests an immediate update. default_model reports the query session's advertised default. supported_efforts reports worker-native levels: null means unknown, [] means explicitly no levels. For dispatch_task.effort, use off|low|medium|high|max for adapter mapping. Available when coordinator.dispatch_enabled=true; on a hub it is served only on the loopback admin API, never on the remote gateway."""
+    return await _service(ctx).list_models(agent=agent, cwd=cwd, refresh=refresh)
 
 
 @mcp.tool()
