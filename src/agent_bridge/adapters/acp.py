@@ -1549,8 +1549,9 @@ class AcpAdapter(Adapter):
         if not uses_generic_acp_selection(self.agent) or live.conn is None or not session.native_session_id:
             return
         requested_model = task.model if task is not None else None
-        tier: str | None = None
         model = requested_model or session.model
+        retained_tier = session.acp_model_tier if model == session.model else None
+        tier = retained_tier
         if model:
             model_option_id = next(iter(config_select_ids_for_category(live.config_options, "model")), "model")
             current, offered = config_option_values(live.config_options, model_option_id)
@@ -1567,8 +1568,10 @@ class AcpAdapter(Adapter):
                 await self._sync_model_option(live, session, model=model, option_id=model_option_id)
                 if live.applied_model == model:
                     session.model = requested_model or session.model
+                    session.acp_model_tier = retained_tier
                 elif live.applied_model is not None:
                     session.model = live.applied_model
+                    session.acp_model_tier = tier
         if task is not None and task.effort is not None:
             session.effort = task.effort
         effort = session.effort or tier

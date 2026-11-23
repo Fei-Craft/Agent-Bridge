@@ -55,7 +55,8 @@ class EchoAgent:
                 options=[SessionConfigSelectOption(value=value, name=value) for value in values],
             )
 
-        result = [option(self._model_option, self._model, ["default-model", "family", "family-high"], "model")]
+        models = ["default-model", "family", "family-high", "other-family"]
+        result = [option(self._model_option, self._model, models, "model")]
         if self._model == "family":
             result.append(option(self._effort_option, self._effort, ["none", "low", "high", "xhigh"], "thought_level"))
         return result

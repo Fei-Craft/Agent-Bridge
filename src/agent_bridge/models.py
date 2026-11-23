@@ -103,6 +103,7 @@ class Session(BaseModel):
     proc_state: ProcState = ProcState.idle_unloaded
     model: str | None = None
     effort: str | None = None
+    acp_model_tier: str | None = None
     title: str | None = None
     turns: int = 0
     created_at: str = Field(default_factory=iso)

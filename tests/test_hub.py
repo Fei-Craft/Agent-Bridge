@@ -243,6 +243,32 @@ async def test_generic_acp_uses_config_categories_with_custom_ids(hub, tmp_path)
     assert result['warnings'] == []
 
 
+async def test_generic_acp_substituted_model_keeps_inferred_effort_after_reload(hub, bridge_home, tmp_path):
+    client, registry = hub
+    registry.config.agents['echo'] = AgentConfig(
+        name='echo', protocol='acp', revivable=True,
+        command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
+        env={'BRIDGE_ECHO_SELECTION': '1', 'BRIDGE_ECHO_COERCE_MODEL': '1'},
+    )
+    path = '/v1/agents/echo/invoke'
+    body = {'message': 'hello', 'cwd': str(tmp_path)}
+    first = (await client.post(path, json={**body, 'model': 'other-family-xhigh'})).json()
+    assert first['status'] == 'completed'
+    assert (first['observed_model'], first['observed_effort']) == ('family', 'xhigh')
+    assert "returned 'family'" in first['warnings'][0]
+    session_id = first['session_id']
+    session = registry.sessions[session_id]
+    await registry._adapter_for(session).shutdown(session)
+    persisted = json.loads((bridge_home / 'state.json').read_text(encoding='utf-8'))
+    row = next(row for row in persisted['sessions'] if row['session_id'] == session_id)
+    registry.sessions[session_id] = type(session).model_validate(row)
+    follow_up = (await client.post(path, json={**body, 'session_id': session_id})).json()
+    assert follow_up['status'] == 'completed'
+    assert follow_up['result_text'] == 'loaded:hello'
+    assert (follow_up['observed_model'], follow_up['observed_effort']) == ('family', 'xhigh')
+    assert follow_up['warnings'] == []
+
+
 def test_hub_config(bridge_home):
     bridge_home.mkdir()
     (bridge_home / 'agents.toml').write_text('[hub]\nhost="localhost"\nport=9000\nmax_depth=2\n')
