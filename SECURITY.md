@@ -29,3 +29,12 @@ Remote-origin workers still receive no hub credential (`AGENT_BRIDGE_HUB=off`).
 This is an API authorization boundary, not an OS sandbox. Same-user code may
 still access the owner's keyring or other local credentials; isolate untrusted
 workers with a separate OS account or container.
+
+## Remote execution approval
+
+Remote calls require local approval by default. Enabling the gateway rejects
+allowlisted agents with permission-skipping argv/presets (including the bundled
+Claude/OpenCode CLI presets) unless that agent explicitly sets
+`remote_allow_unsafe_permissions = true`. This opt-in emits a warning and does
+not create a sandbox. Same-user workers can read the owner's keyring; use a
+separate OS user or container for remote-origin execution.

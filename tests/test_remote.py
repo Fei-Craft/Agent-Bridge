@@ -18,7 +18,7 @@ from starlette.requests import Request
 
 from agent_bridge import cli
 from agent_bridge.adapters.fake import FakeAdapter
-from agent_bridge.config import AgentConfig, HubConfig, RemoteConfig, load_config
+from agent_bridge.config import AgentConfig, AppConfig, HubConfig, RemoteConfig, load_config
 from agent_bridge.hub import create_app
 from agent_bridge.models import ProcState, Session, Task, TaskStatus
 from agent_bridge.registry import Registry
@@ -31,6 +31,7 @@ from agent_bridge.worker_env import build_worker_env
 async def gateway(bridge_home, tmp_path):
     config = load_config(bridge_home)
     config.hub.remote = RemoteConfig(enabled=True, public_url='http://127.0.0.1:8766',
+        require_approval=False,
         remote_callable_agents=['fake', 'cloud'], remote_workspaces={'project': str(tmp_path)})
     config.agents['cloud'] = AgentConfig(name='cloud', protocol='cloud', cloud={'provider': 'devin', 'org_id': 'org'})
     registry = Registry.create(bridge_home, config)
@@ -51,6 +52,55 @@ async def gateway(bridge_home, tmp_path):
 
 def payload(**kwargs):
     return {'agent': 'fake', 'message': 'hello', 'workspace': 'project', **kwargs}
+
+
+@pytest.mark.parametrize('flag', ['--dangerously-skip-permissions', '--auto', '--yolo',
+    '--full-auto', '--dangerously-bypass-approvals-and-sandbox', '--force', '--auto=true'])
+@pytest.mark.parametrize('location', ['command', 'fallback_commands', 'cli'])
+def test_remote_unsafe_permissions_require_explicit_opt_in(flag, location, caplog):
+    spec = {'name': 'unsafe', 'protocol': 'cli', 'command': ['worker']}
+    spec[location] = {'extra_args': [flag]} if location == 'cli' else ([['worker', flag]] if location == 'fallback_commands' else ['worker', flag])
+    agent = AgentConfig.model_validate(spec)
+    remote = HubConfig(remote={'enabled': True, 'remote_callable_agents': ['unsafe']})
+    with pytest.raises(ValueError, match='remote_allow_unsafe_permissions'):
+        AppConfig(agents={'unsafe': agent}, hub=remote)
+    agent.remote_allow_unsafe_permissions = True
+    AppConfig(agents={'unsafe': agent}, hub=remote)
+    assert 'unsafe explicitly allows unsafe permissions' in caplog.text
+
+
+def test_remote_defaults_and_preset_validation(bridge_home):
+    assert RemoteConfig().require_approval is True
+    config = load_config(bridge_home)
+    config.hub.remote = RemoteConfig(enabled=True)
+    config.validate_remote_agents()
+    for name in ('opencode', 'claude'):
+        config.hub.remote.remote_callable_agents = [name]
+        with pytest.raises(ValueError, match='skips permissions'):
+            config.validate_remote_agents()
+    bridge_home.mkdir(exist_ok=True)
+    (bridge_home / 'agents.toml').write_text('[hub.remote]\nenabled=true\nremote_callable_agents=["claude"]\n', encoding='utf-8')
+    with pytest.raises(ValueError, match='skips permissions'):
+        load_config(bridge_home)
+
+
+async def test_remote_approval_is_required_by_default(gateway):
+    client, registry, _, _ = gateway
+    registry.remote.config = RemoteConfig(enabled=True)
+    pending = asyncio.create_task(client.post('/v1/tasks', json=payload()))
+    try:
+        for _ in range(100):
+            if registry.remote.approvals:
+                break
+            await asyncio.sleep(0.01)
+        assert registry.remote.approvals and not pending.done()
+        assert not any(session.remote_origin for session in registry.sessions.values())
+        approval_id = next(iter(registry.remote.approvals))
+        registry.remote.decide(approval_id, False)
+        assert (await pending).status_code == 403
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
 
 
 async def test_remote_workers_never_receive_admin_credentials(gateway, monkeypatch):

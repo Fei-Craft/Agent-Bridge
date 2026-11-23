@@ -79,6 +79,7 @@ class RemoteGateway:
         self._unauthenticated_audit: deque[float] = deque()
         self.workspaces: dict[str, str] = {}
         if self.config.enabled:
+            registry.config.validate_remote_agents()
             for name, path in self.config.remote_workspaces.items():
                 resolved = Path(path).expanduser().resolve(strict=True)
                 if not resolved.is_dir():

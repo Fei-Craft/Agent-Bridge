@@ -343,7 +343,7 @@ delivery queue, waits for the current cloud turn to finish, and suppresses
 notification loops. Polling is available while the scoped token is valid. The
 underlying local task is not cancelled on HTTP disconnect or token expiry.
 
-Set `require_approval=true` (recommended) to hold submissions before execution.
+`require_approval=true` by default holds submissions before execution.
 Use `agent-bridge approvals list`, `approvals approve APPROVAL_ID`, or
 `approvals deny APPROVAL_ID`. Pending approvals expire with their token and are
 discarded on restart. Admin-only REST: GET `/v1/approvals`, POST

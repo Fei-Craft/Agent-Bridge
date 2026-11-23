@@ -168,7 +168,7 @@ HTTP 断开/token 过期不取消已经启动的本地任务。
 
 notify_caller=true 使用现有持久有序回推队列，等待云 session 空闲后通过 Devin
 message / Cursor follow-up run 发送结果；交付 turn 不增加深度、不产生通知循环。
-也可在 token 有效期内轮询。推荐 require_approval=true，执行前本机
+也可在 token 有效期内轮询。默认 require_approval=true，执行前本机
 `agent-bridge approvals list`，再 `approve 审批ID` 或 `deny 审批ID`。
 审批随 token 过期，重启丢弃。管理端（远程网关不开放）REST：GET `/v1/approvals`、
 POST `/v1/approvals/{id}/approve` 或 `/deny`、GET `/v1/remote`、

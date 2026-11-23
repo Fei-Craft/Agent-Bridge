@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import re
 import tomllib
@@ -170,6 +171,19 @@ class AgentConfig(BaseModel):
     # key=value). No key validation, no filtering, user config.toml is
     # never read.
     config_overrides: list[str] = Field(default_factory=list)
+    remote_allow_unsafe_permissions: bool = False
+
+    def unsafe_remote_permissions(self) -> bool:
+        argv = [*self.command, *(arg for cmd in self.fallback_commands for arg in cmd),
+                *self.cli.command, *self.cli.extra_args, *self.cli.resume_args,
+                *self.cli.model_args, *self.cli.effort_args, *self.cli.prompt_args]
+        unsafe = {'--dangerously-skip-permissions', '--auto', '--yolo', '--full-auto',
+                  '--dangerously-bypass-approvals-and-sandbox', '--force',
+                  '--allow-dangerously-skip-permissions'}
+        return (self.protocol == 'agy' or self.session_meta.get('yolo') in (True, 'true', 1)
+                or any(arg.split('=', 1)[0] in unsafe for arg in argv)
+                or any(value.strip('\"\'') in {'bypassPermissions', 'danger-full-access'}
+                       for arg in [*argv, *self.config_overrides] for value in arg.split('=')))
 
     @model_validator(mode='after')
     def validate_protocol(self) -> AgentConfig:
@@ -277,7 +291,7 @@ class RemoteConfig(BaseModel):
     max_concurrent_per_token: int = Field(default=2, ge=1)
     rate_limit_per_min: int = Field(default=60, ge=1)
     max_body_bytes: int = Field(default=65536, ge=1)
-    require_approval: bool = False
+    require_approval: bool = True
     public_url: str = ''
     access_note: str = ''
     require_cf_access: bool = False
@@ -320,6 +334,21 @@ class AppConfig(BaseModel):
     coordinator: CoordinatorConfig = Field(default_factory=CoordinatorConfig)
     quota: QuotaConfig = Field(default_factory=QuotaConfig)
     warnings: list[str] = Field(default_factory=list)
+
+    def validate_remote_agents(self) -> None:
+        if not self.hub.remote.enabled:
+            return
+        for name in self.hub.remote.remote_callable_agents:
+            agent = self.get(name)
+            if agent.remote_allow_unsafe_permissions:
+                logging.getLogger(__name__).warning('remote agent %s explicitly allows unsafe permissions', name)
+            elif agent.unsafe_remote_permissions():
+                raise ValueError(f'remote agent {name} skips permissions; set remote_allow_unsafe_permissions=true to explicitly opt in')
+
+    @model_validator(mode='after')
+    def validate_remote_boundary(self) -> AppConfig:
+        self.validate_remote_agents()
+        return self
 
     def get(self, name: str) -> AgentConfig:
         if name not in self.agents:

@@ -653,6 +653,13 @@ and billing intact. Explicitly cancel or end_session to stop cloud work.
 
 ## Permissions
 
+Remote execution requires approval by default (`hub.remote.require_approval=true`).
+Agents with permission-skipping argv/presets are rejected when remote is enabled,
+unless `[agents.NAME] remote_allow_unsafe_permissions=true` explicitly opts in
+(with a warning). This includes the bundled Claude/OpenCode CLI presets. Prefer
+removing unsafe flags and running remote workers under a separate OS user/container:
+same-user workers can still access the owner's keyring.
+
 The owner CLI/dashboard/coordinator keeps the admin hub bearer. Hub-launched
 local workers receive scoped `abw_` credentials instead: they can discover agents,
 call peers, and inspect/cancel their own child tasks, but cannot change preferences,
