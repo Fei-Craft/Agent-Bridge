@@ -50,7 +50,7 @@ def test_unavailable_and_plaintext_backend_refused(monkeypatch, caplog):
 
 
 async def test_full_flow_no_plaintext_and_discovery(bridge_home, tmp_path, monkeypatch):
-    token, callback, key = ('generated-hub-credential-value', 'callback-signing-value', 'provider-key-value')
+    token, callback, key = ('generated-hub-credential-value', 'callback-signing-value' * 2, 'provider-key-value')
     secrets.set_secret('cloud:cursor', key)
     registry = Registry.create(bridge_home)
     registry.config.agents['cursor'] = AgentConfig(name='cursor', protocol='cloud', cloud={'provider': 'cursor'})
@@ -90,7 +90,7 @@ async def test_migration_and_unsigned_restart_refused(bridge_home, tmp_path, mon
     await registry.start()
     await registry.deliveries.stop()
     try:
-        response = await registry.dispatch_task('fake', 'hello', cwd=str(tmp_path), callback_url='http://listener', callback_secret='lost-callback-credential')
+        response = await registry.dispatch_task('fake', 'hello', cwd=str(tmp_path), callback_url='http://listener', callback_secret='lost-callback-credential' * 2)
         await registry.wait_task(response['task_id'], timeout_sec=5)
         task = registry.tasks[response['task_id']]
     finally:
