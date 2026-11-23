@@ -182,3 +182,26 @@ def test_capability_does_not_claim_unimplemented_agents():
         cfg = AgentConfig(name=name, protocol=protocol, command=["unused"])
         assert model_discovery_capability(cfg)["supported"]
     assert not model_discovery_capability(AgentConfig(name="grok", protocol="acp", command=["unused"]))["supported"]
+
+
+async def test_idle_exit_waits_for_inflight_discovery(catalog_registry, tmp_path, monkeypatch):
+    registry, _ = catalog_registry
+    registry.config.server.idle_exit_sec = 0.01
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class Slow:
+        async def list_models(self, cwd):
+            started.set()
+            await release.wait()
+            return {"source": "slow", "models": [{"id": "m"}]}
+
+    monkeypatch.setattr("agent_bridge.registry.build_adapter", lambda *args: Slow())
+    lookup = asyncio.create_task(registry.list_models("kimi", str(tmp_path)))
+    await started.wait()
+    await asyncio.sleep(0.02)
+    assert not registry.idle_exit_due()
+    release.set()
+    await lookup
+    assert not registry.idle_exit_due()
+    await asyncio.sleep(0.02)
+    assert registry.idle_exit_due()

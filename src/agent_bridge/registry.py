@@ -180,6 +180,7 @@ class Registry:
         self._adapters: dict[str, Adapter] = {}
         self._model_cache: dict[tuple[str, str], tuple[float, dict]] = {}
         self._model_locks: dict[str, asyncio.Lock] = {}
+        self._model_discoveries = 0
         self._done: dict[str, asyncio.Event] = {}
         self._idle: dict[str, asyncio.Task[None]] = {}
         self._bg: dict[str, asyncio.Task[None]] = {}
@@ -420,7 +421,7 @@ class Registry:
         idle_sec = self.config.server.idle_exit_sec
         if idle_sec <= 0:
             return False
-        if time.monotonic() - self._last_activity < idle_sec:
+        if time.monotonic() - self._last_activity < idle_sec or self._model_discoveries:
             return False
         return all(
             task.status not in {TaskStatus.queued, TaskStatus.running} for task in self.tasks.values()
@@ -640,6 +641,7 @@ class Registry:
         if not refresh and previous and time.monotonic() - previous[0] < self.config.models.cache_sec:
             return {**copy.deepcopy(previous[1]), "cached": True}
         lock = self._model_locks.setdefault(agent, asyncio.Lock())
+        self._model_discoveries += 1
         try:
             async with asyncio.timeout(self.config.models.timeout_sec), lock:
                 previous = self._model_cache.get(key)
@@ -666,6 +668,9 @@ class Registry:
                 return result
         except Exception as exc:
             raise RuntimeError(redact_diagnostic(str(exc)) or type(exc).__name__) from None
+        finally:
+            self._model_discoveries -= 1
+            self.touch_activity()
 
     async def _quota_for(self, cfg: AgentConfig, *, available: bool) -> dict:
         """The ``quota`` block for one ``list_agents`` row. Never raises, never gates ``available``."""
