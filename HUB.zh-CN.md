@@ -152,8 +152,8 @@ URL 仅保存在运行时，重启需重新配置。named tunnel 的 ingress 只
 每次云端 turn 只在发给提供商的提示词中附加网关地址、256-bit 随机 `abr_` token、
 允许的 agent/workspace 名及 curl 用法。本地仅保留 SHA-256 哈希与作用域，
 不把原始 token 写入状态、转录、结果、日志或审计；云提供商的历史记录必然能看到它，
-必须视为可信且含凭证的系统。重启使所有 token 失效。TTL 默认等于云 agent turn 超时
-（禁用超时时用 24h）。云 turn 结束立即禁止新调用/取消；仅原 token 的结果/状态查询
+必须视为可信且含凭证的系统。重启使所有 token 失效。token_ttl_sec 默认 3600 秒，
+与云 agent turn 超时无关。云 turn 结束立即禁止新调用/取消；仅原 token 的结果/状态查询
 有 result_fetch_grace_sec（默认 30 秒）宽限，且不能超过 TTL。
 
 仅开放五个路由：POST `/v1/agents/{agent}/invoke`（阻塞并保持心跳）、

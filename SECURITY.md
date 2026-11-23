@@ -48,3 +48,10 @@ restricted to 1–100 characters matching
 the exact selection in the agent's `remote_allowed_models` or
 `remote_allowed_efforts` list (empty by default). These guards prevent option
 injection; they do not constrain what tools an agent can execute.
+
+## Remote token lifetime
+
+Remote gateway tokens expire after 3600 seconds by default, independent of cloud
+turn timeouts (`hub.remote.token_ttl_sec` overrides this). The token is included
+in the cloud prompt and remains in provider-side session history; protect that
+history as credential-bearing data. Bridge redaction cannot remove provider copies.

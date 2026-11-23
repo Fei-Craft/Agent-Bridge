@@ -54,6 +54,30 @@ def payload(**kwargs):
     return {'agent': 'fake', 'message': 'hello', 'workspace': 'project', **kwargs}
 
 
+@pytest.mark.parametrize('turn_timeout', [0, 30, 86400])
+async def test_remote_token_default_ttl_independent_of_turn_timeout(gateway, turn_timeout):
+    _, registry, _, _ = gateway
+    assert RemoteConfig().token_ttl_sec == 3600
+    registry.config.get('cloud').turn_timeout_sec = turn_timeout
+    before = time.time()
+    scope, _ = registry.remote.issue(registry.tasks['task_origin'])
+    assert before + 3600 <= scope.expires <= time.time() + 3600
+
+
+async def test_remote_token_explicit_ttl(gateway):
+    _, registry, _, _ = gateway
+    registry.remote.config.token_ttl_sec = 90
+    before = time.time()
+    scope, _ = registry.remote.issue(registry.tasks['task_origin'])
+    assert before + 90 <= scope.expires <= time.time() + 90
+
+
+@pytest.mark.parametrize('ttl', [None, 0, -1])
+def test_remote_token_ttl_must_be_positive(ttl):
+    with pytest.raises(ValidationError):
+        RemoteConfig(token_ttl_sec=ttl)
+
+
 @pytest.mark.parametrize('flag', ['--dangerously-skip-permissions', '--auto', '--yolo',
     '--full-auto', '--dangerously-bypass-approvals-and-sandbox', '--force', '--auto=true'])
 @pytest.mark.parametrize('location', ['command', 'fallback_commands', 'cli'])

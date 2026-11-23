@@ -110,7 +110,7 @@ class RemoteGateway:
         self.scopes = {key: scope for key, scope in self.scopes.items() if scope.expires > now and (not scope.revoked or scope.fetch_until > now)}
         raw = 'abr_' + secrets.token_urlsafe(32)
         digest = hashlib.sha256(raw.encode()).hexdigest()
-        ttl = self.config.token_ttl_sec or self.registry.config.get(task.agent).turn_timeout_sec or 86400
+        ttl = self.config.token_ttl_sec
         scope = TokenScope(digest, task.session_id, task.task_id, frozenset(self.config.remote_callable_agents),
             dict(self.workspaces), now + ttl, task.call_depth, max(0, min(3, self.registry.config.hub.max_depth) - task.call_depth),
             self.config.max_calls_per_token)

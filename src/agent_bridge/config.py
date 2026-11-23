@@ -294,7 +294,7 @@ class RemoteConfig(BaseModel):
     port: int = Field(default=8766, ge=1, le=65535)
     remote_callable_agents: list[str] = Field(default_factory=list)
     remote_workspaces: dict[str, str] = Field(default_factory=dict)
-    token_ttl_sec: float | None = Field(default=None, gt=0)
+    token_ttl_sec: float = Field(default=3600, gt=0)
     result_fetch_grace_sec: float = Field(default=30, ge=0, le=300)
     max_calls_per_token: int = Field(default=16, ge=1)
     max_concurrent_per_token: int = Field(default=2, ge=1)

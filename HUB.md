@@ -314,8 +314,8 @@ gateway URL, curl examples and allowed names. Tokens have 256 bits of entropy;
 the gateway retains only SHA-256 hashes/scopes in RAM. No token goes into Bridge
 state, transcripts, result files, logs or audit. Provider-side prompts necessarily
 contain it: treat cloud history and the provider as credential-bearing trusted
-systems. Restart invalidates all gateway tokens. `token_ttl_sec` defaults to the
-cloud turn timeout (24 hours when that timeout is disabled). End-of-turn revokes
+systems. Restart invalidates all gateway tokens. `token_ttl_sec` defaults to
+3600 seconds, independent of the cloud turn timeout. End-of-turn revokes
 new calls/cancellation immediately; owned status/result GETs retain up to
 `result_fetch_grace_sec` (default 30 seconds), never beyond token expiry.
 

@@ -130,7 +130,7 @@ max_depth = 3
 # port = 8766
 # remote_callable_agents = ["opencode"]
 # remote_workspaces = { project = "/absolute/trusted/project" }
-# # token_ttl_sec = 86400 # omitted: cloud agent's turn_timeout_sec (24h if disabled)
+# token_ttl_sec = 3600 # default, independent of the cloud turn timeout
 # result_fetch_grace_sec = 30
 # max_calls_per_token = 16
 # max_concurrent_per_token = 2

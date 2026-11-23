@@ -665,6 +665,10 @@ and billing intact. Explicitly cancel or end_session to stop cloud work.
 
 ## Permissions
 
+Gateway `token_ttl_sec` defaults to 3600 seconds, not the cloud turn timeout.
+The bearer is included in cloud session history: treat provider history as
+credential-bearing data even though Bridge redacts its own persisted output.
+
 Remote execution requires approval by default (`hub.remote.require_approval=true`).
 Agents with permission-skipping argv/presets are rejected when remote is enabled,
 unless `[agents.NAME] remote_allow_unsafe_permissions=true` explicitly opts in
