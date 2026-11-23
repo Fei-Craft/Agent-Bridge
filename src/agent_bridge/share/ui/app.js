@@ -136,7 +136,7 @@ function eventText(event) {
   const data = event.data || {}, item = data.payload?.item || data.payload || data.value || {};
   if (event.type.startsWith('tool_call')) return [data.title || item.command || data.path || data.kind || item.type,
     labels[data.status] || data.status].filter(Boolean).join(' · ');
-  return values(data.text || data.title || data.stderr || data.path || item.text || item.message ||
+  return values(data.text || data.title || data.stderr || data.path || item.step_update?.text_delta || item.text_delta || item.delta || item.text || item.message ||
     data.status_detail || data.status || data.stop_reason || data.error || item.type || data.update_type || '');
 }
 function appendTranscript(events) {
