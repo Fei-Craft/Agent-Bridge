@@ -29,6 +29,23 @@ def test_persisted_models_have_no_credential_fields(model):
         assert not any(part in name.lower() for part in ('secret', 'token', 'key', 'password')), name
 
 
+def test_callback_secret_observes_external_keyring_changes(memory_keyring, monkeypatch):
+    key = secrets.callback_secret_key('owner')
+    secrets.store_callback_secret('owner', 'a' * 32)
+    assert secrets.load_callback_secret('owner') == 'a' * 32
+    memory_keyring.set_password(secrets.SERVICE, key, 'b' * 32)
+    assert secrets.load_callback_secret('owner') == 'b' * 32
+    memory_keyring.delete_password(secrets.SERVICE, key)
+    with pytest.raises(ValueError, match='not found in keyring'):
+        secrets.load_callback_secret('owner')
+    assert key not in secrets._memory
+    secrets.store_callback_secret('owner', 'c' * 32)
+    monkeypatch.setattr(secrets.keyring, 'get_keyring', lambda: object())
+    with pytest.raises(ValueError, match='not found in keyring'):
+        secrets.load_callback_secret('owner')
+    assert key not in secrets._memory
+
+
 def test_keyring_cloud_and_cli(memory_keyring, monkeypatch, capsys, caplog):
     value = 'unique-provider-credential-value'
     monkeypatch.setattr('getpass.getpass', lambda prompt: value)

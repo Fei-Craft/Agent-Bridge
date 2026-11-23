@@ -43,6 +43,8 @@ Claude/OpenCode CLI presets) unless that agent explicitly sets
 `remote_allow_unsafe_permissions = true`. This opt-in emits a warning and does
 not create a sandbox. Same-user workers can read the owner's keyring; use a
 separate OS user or container for remote-origin execution.
+The bundled DSH preset also needs this opt-in: its `DSH_PERMISSION_MODE`
+environment setting disables tool approvals in the legacy ACP composition.
 
 ## CLI input boundaries
 
@@ -50,7 +52,7 @@ CLI prompts use stdin or a standalone positional argument after `--`; custom
 unprotected `{prompt}` templates are rejected. Model/effort selections are
 restricted to 1–100 characters matching
 `^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]{0,99}$` for effort; model IDs also allow
-non-leading `#` for MiniMax variants. Remote callers additionally need
+non-leading `#` for MiniMax variants and `\` for ZCode provider/model IDs. Remote callers additionally need
 the exact selection in the agent's `remote_allowed_models` or
 `remote_allowed_efforts` list (empty by default). These guards prevent option
 injection; they do not constrain what tools an agent can execute.
@@ -76,6 +78,11 @@ securely; `list` prints names only and `delete NAME` removes the entry.
 `ask --callback-secret` creates a short-lived keyring reference and cleans it up
 after dispatch; it refuses memory-only storage that another process cannot read.
 Signing secrets require at least 32 characters. Tasks keep only a signed boolean.
+Named callback signing keys are admin-only; worker bearers cannot request a
+callback signed with an owner's keyring entry.
+Named-key lookups read the keyring authoritatively and fail closed if unavailable;
+cached values do not survive external deletion. Per-task delivery secrets retain
+their documented RAM-only fallback.
 
 Remote gateway tokens expire after 3600 seconds by default, independent of cloud
 turn timeouts (`hub.remote.token_ttl_sec` overrides this). The token is included

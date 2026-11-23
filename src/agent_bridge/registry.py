@@ -756,6 +756,8 @@ class Registry:
             raise RuntimeError(NESTED_DISPATCH_ERROR)
         validate_selection(model, 'model')
         validate_selection(effort, 'effort')
+        if caller_session_context.get() is not None and callback_secret_name is not None:
+            raise PermissionError('callback_secret_name is admin-only')
         caller_task = self._busy_task(caller_session_id) if caller_session_id else None
         if caller_session_id and caller_session_id not in self.sessions:
             raise ValueError('unknown caller session')
