@@ -29,7 +29,10 @@ with `protocol = "cloud"`, OS-keyring API keys (`agent-bridge secrets set cursor
 of a local cwd. See [cloud setup](HUB.md#cloud-api-workers) and the commented
 presets in `agents.toml.example`. Cloud calls incur provider costs; Devin uses
 ACUs, and **cancelling terminates its session permanently**. Cloud workers do not
-inherit local hub peer-call credentials or reach a loopback hub.
+inherit admin hub credentials or directly reach a loopback hub. Optional
+[cloud-to-local access](HUB.md#opt-in-cloud-to-local-gateway) uses a separate,
+off-by-default gateway with scoped per-turn tokens, named workspaces, quotas,
+local approvals and a remote-port-only tunnel. Never tunnel the admin port.
 Hub shutdown and idle unload leave cloud agents running; remote billing may
 continue until you explicitly cancel or end the session.
 
@@ -207,7 +210,9 @@ ask/invoke 默认等到结束；--timeout 可限制等待。MCP invoke_agent 会
 密钥通过 `agent-bridge secrets set cursor` / `set devin` 隐藏输入并保存到 OS keyring，
 环境变量只作带警告的显式回退；使用仓库 URL 而非本地 cwd。配置示例见 `agents.toml.example`，
 用法见 [云端说明](HUB.zh-CN.md#云端-api-worker)。云端调用会产生费用，Devin 使用 ACU，
-**取消会永久终止 Devin session**。云端不继承本地同伴调用凭证，也无法访问 loopback Hub。
+**取消会永久终止 Devin session**。云端不继承管理端凭证，也无法直接访问 loopback Hub。
+可选 [云端到本地网关](HUB.zh-CN.md#可选云端到本地网关) 默认关闭，使用独立端口、
+每 turn 作用域 token、命名目录白名单、限额和本机审批；隧道只连接网关，绝不能暴露管理端。
 Hub 关闭或空闲卸载不会停止云端 agent；远程计费可能继续，请显式取消或结束 session。
 
 如需无头 `cli -p` 风格 worker，可在用户配置的对应 agent 下设置 `protocol = "cli"`

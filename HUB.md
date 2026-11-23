@@ -249,7 +249,7 @@ Remote work and provider billing may continue after the hub stops; use explicit
 the provider job, which may still be running. Bridge does not automatically
 reattach to that in-flight turn.
 
-No hub URL/token/caller environment is sent to cloud providers. Cloud workers
+No admin hub URL/token/caller environment is sent to cloud providers. Cloud workers
 cannot call back to the default loopback hub; peer-call env injection applies
 only to local workers. `base_url` is a trusted configuration setting: point it
 only at the provider or a trusted gateway (local HTTP is useful for tests).
@@ -257,5 +257,83 @@ Use HTTPS for real credentials. Never put API keys in URLs, prompts or config.
 
 API references: [Cursor v1](https://cursor.com/docs/cloud-agent/api/endpoints),
 [Devin v3](https://docs.devin.ai/api-reference/v3/sessions/post-organizations-sessions).
+
+## Opt-in cloud-to-local gateway
+
+Cloud agents can use a **separate, restricted** gateway, not the admin API.
+It is off by default. Copy `[hub.remote]` from `agents.toml.example`, with explicit
+`remote_callable_agents` and named absolute `remote_workspaces`. Both listeners
+must stay on loopback when remote access is enabled; ports must differ.
+Workspace names are exact allowlist keys, not paths; raw `cwd`, session ids,
+callbacks and arbitrary dispatch parameters are rejected. This is routing
+containment, **not an OS/filesystem sandbox**: allowlisted agents can execute
+tools with the host user's privileges. Use a dedicated OS account/container and
+dedicated worktree, never an unrestricted agent over sensitive files.
+
+Start `agent-bridge serve`, then in another terminal `agent-bridge tunnel`.
+The helper runs `cloudflared tunnel --url http://127.0.0.1:8766`, parses the quick
+HTTPS URL, and updates the running hub. Install cloudflared separately from its
+official releases. `--name EXISTING_TUNNEL` runs an existing named tunnel, never
+creates credentials; use `--public-url https://gateway.example.com` when its URL
+is not printed. Configure its ingress for the **remote port only**. Authenticate
+cloudflared using an externally provisioned in-memory environment token when
+needed; do not create plaintext tunnel credential files. Helper output omits
+raw cloudflared logs. Ctrl-C terminates the child tunnel. The URL change is
+runtime-only; re-run the helper after restarting the hub. Never tunnel port 8765.
+
+Each cloud turn gets a new `abr_` token in its outbound provider prompt, with
+gateway URL, curl examples and allowed names. Tokens have 256 bits of entropy;
+the gateway retains only SHA-256 hashes/scopes in RAM. No token goes into Bridge
+state, transcripts, result files, logs or audit. Provider-side prompts necessarily
+contain it: treat cloud history and the provider as credential-bearing trusted
+systems. Restart invalidates all gateway tokens. `token_ttl_sec` defaults to the
+cloud turn timeout (24 hours when that timeout is disabled). End-of-turn revokes
+new calls/cancellation immediately; owned status/result GETs retain up to
+`result_fetch_grace_sec` (default 30 seconds), never beyond token expiry.
+
+The **only** remote routes are:
+
+| Method | Path | Input / scope |
+|---|---|---|
+| POST | `/v1/agents/{agent}/invoke` | message, workspace NAME, optional notify_caller, model, effort, timeout_sec; blocking with keepalives |
+| POST | `/v1/tasks` | same fields plus agent; asynchronous task id |
+| GET | `/v1/tasks/{id}` | only tasks created with this exact token |
+| GET | `/v1/tasks/{id}/result` | owned result, optional cursor/max_chars |
+| POST | `/v1/tasks/{id}/cancel` | owned task; JSON `{}` |
+
+Everything else, including health, list agents/sessions, transcripts, approvals,
+preferences, wait and CORS preflight, is 404. POSTs require JSON and are streamed
+under `max_body_bytes`; tokens have call budgets, per-minute rate limits and
+concurrent-task limits. Remote calls inherit cloud task depth, capped at three,
+and cannot call their own originating agent. No raw user callback URL is allowed
+on this surface (avoids remote callback SSRF). Admin callbacks remain trusted
+configuration and **can access private networks**; do not accept untrusted URLs.
+
+`notify_caller: true` submits the local result into the originating Cursor agent
+as a follow-up run or Devin session as a message. It uses the durable ordered
+delivery queue, waits for the current cloud turn to finish, and suppresses
+notification loops. Polling is available while the scoped token is valid. The
+underlying local task is not cancelled on HTTP disconnect or token expiry.
+
+Set `require_approval=true` (recommended) to hold submissions before execution.
+Use `agent-bridge approvals list`, `approvals approve APPROVAL_ID`, or
+`approvals deny APPROVAL_ID`. Pending approvals expire with their token and are
+discarded on restart. Admin-only REST: GET `/v1/approvals`, POST
+`/v1/approvals/{id}/approve` or `/deny`; PUT `/v1/remote/public-url` with
+`{"public_url":"https://..."}`, GET `/v1/remote` for listener metadata.
+
+`remote-audit.jsonl` is mode 0600, recording time, token hash prefix, peer IP,
+bounded CF-Ray/CF-Connecting-IP fields, route, agent, workspace and outcome, not
+prompts, Authorization or JWT contents. Forwarded CF metadata is advisory.
+Back up/rotate audit files safely; quotas are per token, not a global disk/DoS cap.
+
+For public use prefer a named tunnel behind **Cloudflare Access**, service-token
+policy and edge rate limits. Provide `CF-Access-Client-Id` and
+`CF-Access-Client-Secret` from the cloud provider's secret facility, not config,
+access_note or prompts. `require_cf_access=true` checks only the presence of
+`Cf-Access-Jwt-Assertion`; the hub does **not** cryptographically verify that JWT.
+It assumes Access validates it at the edge and the origin cannot be reached
+directly. A quick tunnel alone is not Cloudflare Access. Never expose admin
+through either tunnel or a permissive ingress catch-all.
 
 [中文](HUB.zh-CN.md)

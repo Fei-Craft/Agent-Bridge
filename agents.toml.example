@@ -123,6 +123,24 @@ max_depth = 3
 # MINIMAX_DATA_DIR = "D:/minimax"
 
 # Cloud API workers (uncomment complete blocks; no local command required).
+# Optional cloud-to-local access uses a SEPARATE loopback-only gateway. Never tunnel admin 8765.
+# [hub.remote]
+# enabled = false
+# host = "127.0.0.1"
+# port = 8766
+# remote_callable_agents = ["opencode"]
+# remote_workspaces = { project = "/absolute/trusted/project" }
+# # token_ttl_sec = 86400 # omitted: cloud agent's turn_timeout_sec (24h if disabled)
+# result_fetch_grace_sec = 30
+# max_calls_per_token = 16
+# max_concurrent_per_token = 2
+# rate_limit_per_min = 60
+# max_body_bytes = 65536
+# require_approval = true # recommended; default false
+# public_url = "https://your-gateway.example.com"
+# access_note = "Supply Cloudflare Access service-token headers via your cloud secret store."
+# require_cf_access = true # header presence; validate JWT/service token at Cloudflare Access edge
+
 # Use `agent-bridge secrets set cursor` / `set devin`, then restart the hub.
 # Explicit environment fallback warns; never store keys in this file.
 # [agents.cursor-cloud]

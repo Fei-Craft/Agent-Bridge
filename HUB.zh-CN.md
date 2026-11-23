@@ -104,7 +104,7 @@ Cursor 取消当前 run，end_session 则 archive agent。Hub/Registry 关闭和
 不会 archive Cursor、取消远程 run 或 terminate Devin；远程工作和计费可能继续。
 需要停止时请显式 end_session 或取消。非正常重启仍报告 bridge_restarted，但保留 remote ID/URL，
 云端任务可能仍在运行，需人工检查/停止；不会自动重新接管。
-不向云端发送 Hub URL/token/caller 环境，云端无法回调默认 loopback Hub。
+不向云端发送管理端 Hub URL/token/caller 环境，云端无法直接回调默认 loopback Hub。
 base_url 仅用于可信提供商/网关，真实密钥应走 HTTPS。
 
 完整 REST 路由、curl 示例、分页与超时语义见 [HUB.md](HUB.md)。
@@ -115,3 +115,56 @@ base_url 仅用于可信提供商/网关，真实密钥应走 HTTPS。
 详细参数与解析器配置见 [SETUP.md](SETUP.md#optional-headless-cli-workers)。
 `uv run python scripts/bench_protocols.py --agent opencode --model opencode/big-pickle --n 3`
 可比较首轮、首个 worker 事件、续接轮耗时；首事件不一定是首个文本 token。
+
+## 可选云端到本地网关
+
+默认关闭。复制 `agents.toml.example` 的 `[hub.remote]`，显式配置
+remote_callable_agents 和 remote_workspaces（名字到绝对目录的映射）。
+这是独立 Starlette 端口（默认 8766），不能与管理端 8765 相同；启用后两个端口
+都必须仅监听回环。**绝不把管理端放进隧道**。
+
+启动 `agent-bridge serve` 后运行 `agent-bridge tunnel`，辅助命令启动
+`cloudflared tunnel --url http://127.0.0.1:8766`，解析 HTTPS URL 并更新运行中的 Hub。
+cloudflared 需自行安装官方发行版。`--name 已有隧道名` 仅运行已有 named tunnel，
+不自动创建凭证；无法从输出解析域名时加 `--public-url https://gateway.example.com`。
+认证可通过外部提供的内存环境 token，勿生成明文凭证文件。Ctrl-C 会停止子进程；
+URL 仅保存在运行时，重启需重新配置。named tunnel 的 ingress 只能指向远程网关端口。
+
+每次云端 turn 只在发给提供商的提示词中附加网关地址、256-bit 随机 `abr_` token、
+允许的 agent/workspace 名及 curl 用法。本地仅保留 SHA-256 哈希与作用域，
+不把原始 token 写入状态、转录、结果、日志或审计；云提供商的历史记录必然能看到它，
+必须视为可信且含凭证的系统。重启使所有 token 失效。TTL 默认等于云 agent turn 超时
+（禁用超时时用 24h）。云 turn 结束立即禁止新调用/取消；仅原 token 的结果/状态查询
+有 result_fetch_grace_sec（默认 30 秒）宽限，且不能超过 TTL。
+
+仅开放五个路由：POST `/v1/agents/{agent}/invoke`（阻塞并保持心跳）、
+POST `/v1/tasks`（异步，JSON 含 agent）、GET `/v1/tasks/{id}`、
+GET `/v1/tasks/{id}/result`、POST `/v1/tasks/{id}/cancel`（JSON `{}`）。
+invoke/dispatch 必须含 message 和 workspace **名字**，可带 notify_caller/model/effort/
+timeout_sec。workspace 只能精确匹配白名单，拒绝路径穿越、原始 cwd、session id 和
+callback URL；不能访问其他 token 的 task。其余接口（包括健康、列举、偏好、转录、
+审批、wait、CORS 预检）均 404，无 CORS。限制 JSON body 大小、每 token 调用次数、
+每分钟请求数、并发任务数；继承云 task 深度，最多 3 层，拒绝调用源 agent 自己。
+HTTP 断开/token 过期不取消已经启动的本地任务。
+
+notify_caller=true 使用现有持久有序回推队列，等待云 session 空闲后通过 Devin
+message / Cursor follow-up run 发送结果；交付 turn 不增加深度、不产生通知循环。
+也可在 token 有效期内轮询。推荐 require_approval=true，执行前本机
+`agent-bridge approvals list`，再 `approve 审批ID` 或 `deny 审批ID`。
+审批随 token 过期，重启丢弃。管理端（远程网关不开放）REST：GET `/v1/approvals`、
+POST `/v1/approvals/{id}/approve` 或 `/deny`、GET `/v1/remote`、
+PUT `/v1/remote/public-url`（JSON public_url 字段）。
+
+remote-audit.jsonl 权限 0600，仅记录时间、哈希前缀、IP/有限 CF 元数据、路由、agent、
+workspace、结果，不记录请求消息、Authorization 或 JWT。CF IP/Ray 仅作参考，可能伪造。
+请安全轮转审计；每 token 限额不是全局磁盘/DoS 防护。
+
+公网建议使用 named tunnel + **Cloudflare Access 服务令牌策略** + 边缘限流，
+云端从提供商密钥设施获取 CF-Access-Client-Id/Secret 请求头，不放在配置、提示词或
+access_note 中。require_cf_access=true 只检查 Cf-Access-Jwt-Assertion **存在**，
+Hub 不验证 JWT 签名；必须由 Access 边缘验证，且 origin 不可被直接绕过。
+quick tunnel 本身不等于 Access。禁止任何 ingress catch-all 指向管理端。
+
+白名单工作目录不是 OS 沙箱：本地 agent 的工具仍拥有宿主用户权限。为防云端提示注入，
+使用专用 OS 账户/容器、最小可信 agent 和独立 worktree，开启本机审批，不接触敏感文件。
+远程禁止 callback URL 防止 SSRF；管理端回调仍能访问内网，只接受可信配置。
