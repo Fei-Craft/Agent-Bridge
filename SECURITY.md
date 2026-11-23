@@ -52,7 +52,7 @@ CLI prompts use stdin or a standalone positional argument after `--`; custom
 unprotected `{prompt}` templates are rejected. Model/effort selections are
 restricted to 1–100 characters matching
 `^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]{0,99}$` for effort; model IDs also allow
-non-leading `#` for MiniMax variants. Remote callers additionally need
+non-leading `#` for MiniMax variants and `\` for ZCode provider/model IDs. Remote callers additionally need
 the exact selection in the agent's `remote_allowed_models` or
 `remote_allowed_efforts` list (empty by default). These guards prevent option
 injection; they do not constrain what tools an agent can execute.
