@@ -43,6 +43,8 @@ Claude/OpenCode CLI presets) unless that agent explicitly sets
 `remote_allow_unsafe_permissions = true`. This opt-in emits a warning and does
 not create a sandbox. Same-user workers can read the owner's keyring; use a
 separate OS user or container for remote-origin execution.
+The bundled DSH preset also needs this opt-in: its `DSH_PERMISSION_MODE`
+environment setting disables tool approvals in the legacy ACP composition.
 
 ## CLI input boundaries
 

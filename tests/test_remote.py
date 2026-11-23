@@ -98,10 +98,12 @@ def test_remote_defaults_and_preset_validation(bridge_home):
     config = load_config(bridge_home)
     config.hub.remote = RemoteConfig(enabled=True)
     config.validate_remote_agents()
-    for name in ('opencode', 'claude'):
+    for name in ('opencode', 'claude', 'dsh'):
         config.hub.remote.remote_callable_agents = [name]
         with pytest.raises(ValueError, match='skips permissions'):
             config.validate_remote_agents()
+        config.agents[name].remote_allow_unsafe_permissions = True
+        config.validate_remote_agents()
     bridge_home.mkdir(exist_ok=True)
     (bridge_home / 'agents.toml').write_text('[hub.remote]\nenabled=true\nremote_callable_agents=["claude"]\n', encoding='utf-8')
     with pytest.raises(ValueError, match='skips permissions'):
