@@ -93,6 +93,23 @@ def test_remote_unsafe_permissions_require_explicit_opt_in(flag, location, caplo
     assert 'unsafe explicitly allows unsafe permissions' in caplog.text
 
 
+@pytest.mark.parametrize(('value', 'unsafe'), [
+    ('danger-full-access', True), (' danger-full-access ', True), ('\tDaNgEr-FuLl-AcCeSs\n', True),
+    (' workspace-write ', False), ('', False),
+])
+def test_dsh_permissions_normalized_like_worker_launch(value, unsafe):
+    agent = AgentConfig(name='dsh', protocol='acp', command=['worker'], env={'DSH_PERMISSION_MODE': value})
+    launched = build_worker_env(agent.env, base={}, log_fill=False)
+    assert agent.unsafe_remote_permissions() is unsafe
+    assert launched.get('DSH_PERMISSION_MODE', '') == value.strip().casefold()
+    hub = HubConfig(remote={'enabled': True, 'remote_callable_agents': ['dsh']})
+    if unsafe:
+        with pytest.raises(ValueError, match='skips permissions'):
+            AppConfig(agents={'dsh': agent}, hub=hub)
+        agent.remote_allow_unsafe_permissions = True
+    AppConfig(agents={'dsh': agent}, hub=hub)
+
+
 def test_remote_defaults_and_preset_validation(bridge_home):
     assert RemoteConfig().require_approval is True
     config = load_config(bridge_home)

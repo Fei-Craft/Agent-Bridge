@@ -36,7 +36,7 @@ def remember(value: str) -> str:
 
 def forget(digest: str) -> None:
     for value in tuple(_known):
-        if hashlib.sha256(value.encode()).hexdigest() == digest:
+        if hashlib.sha256(value.encode(errors='surrogatepass')).hexdigest() == digest:
             _known.discard(value)
 
 

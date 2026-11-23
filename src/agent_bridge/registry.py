@@ -1064,7 +1064,10 @@ class Registry:
             self.worker_tokens.active.discard(session.session_id)
             process = self.worker_tokens.processes.get(session.session_id)
             if process is None or process.returncode is not None:
-                self.worker_tokens.revoke(session.session_id)
+                try:
+                    self.worker_tokens.revoke(session.session_id)
+                except Exception:
+                    log.exception('could not clean up worker credential for session %s', session.session_id)
             if worker_context is not None:
                 hub_worker_context.reset(worker_context)
             self.remote.finish(task_id)
