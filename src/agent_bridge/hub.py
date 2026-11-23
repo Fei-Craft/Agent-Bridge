@@ -20,6 +20,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from agent_bridge.api import BridgeService, _error, wait_for_result
+from agent_bridge.desktop_ipc import serve_desktop
 from agent_bridge.hub_client import ROUTES
 from agent_bridge.paths import ensure_home
 from agent_bridge.registry import Registry
@@ -73,7 +74,8 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                 temporary = file.name
                 json.dump(dict(url=url, pid=os.getpid(), started_at=datetime.now(UTC).isoformat()), file)
             os.replace(temporary, path)
-            yield
+            async with serve_desktop(registry.home, registry.desktop):
+                yield
         finally:
             try:
                 if path.exists() and json.loads(path.read_text()).get('pid') == os.getpid():

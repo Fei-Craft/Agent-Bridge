@@ -94,11 +94,16 @@ class Session(BaseModel):
     notification_receipts: dict[str, str] = Field(default_factory=dict)
     session_id: str
     agent: str
+    backend: str | None = None
     cwd: str
     repo: str | None = None
     ref: str | None = None
     remote: dict[str, Any] = Field(default_factory=dict)
     native_session_id: str | None = None
+    fork_source_id: str | None = None
+    baseline_id: str | None = None
+    is_baseline: bool = False
+    fork_label: str | None = None
     proc_state: ProcState = ProcState.idle_unloaded
     model: str | None = None
     effort: str | None = None
@@ -138,6 +143,9 @@ class Task(BaseModel):
     repo: str | None = None
     ref: str | None = None
     remote: dict[str, Any] = Field(default_factory=dict)
+    baseline_id: str | None = None
+    fork_label: str | None = None
+    backend: str | None = None
     model: str | None = None
     effort: str | None = None
     observed_model: str | None = None

@@ -93,6 +93,25 @@ A wait timeout is not failure. Invoke returns only the first result page; check
 status and retrieve further pages with get_result. Manual coordinator policy
 still requires `user_requested:true` on dispatch/invoke (use `call invoke`).
 
+### DSH Desktop baselines
+
+After [installing the same-user connector](SETUP.md#worker-deepseek-harness-desktop),
+finish an investigation in a DSH Desktop session and save it as an immutable
+fork point. Use the admin Hub API, not the separate cloud gateway:
+
+| Operation | Route | Selection |
+| --- | --- | --- |
+| `create_baseline` | `POST /v1/baselines` | JSON `session_id`, `name`; optional `description`, `user_requested` |
+| `list_baselines` | `GET /v1/baselines` | Query `cwd`; optional `agent` (default `dsh`) |
+| `set_default_baseline` | `PUT /v1/baselines/default` | JSON `cwd`, `baseline_id` (`null` clears); optional `agent` |
+
+Dispatch or invoke with an explicit `baseline` ID, omit it (or pass `"default"`)
+to follow the project's default, or pass `"empty"` to start without history.
+Pass `fork_label` to label a new fork. A continuation with `session_id` keeps
+its original history. The same fields work with `agent-bridge ask dsh ... --baseline
+ID --fork-label NAME` and `agent-bridge call`; the compatibility MCP tools proxy
+the same operations to the Hub.
+
 ## Peer calls and security
 
 ### Headless CLI option and measurements

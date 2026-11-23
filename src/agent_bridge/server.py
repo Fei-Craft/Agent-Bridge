@@ -76,7 +76,10 @@ INSTRUCTIONS = (
     "process — do not call dispatch_task, set_preferences, cancel_task, "
     "or end_session. When "
     "dispatch_enabled is true and the user states a lasting preference, "
-    "persist it with set_preferences."
+    "persist it with set_preferences. New DSH sessions automatically use the saved project baseline. "
+    "Use create_baseline, list_baselines and set_default_baseline to manage immutable versions. "
+    "dispatch_task baseline=empty starts blank once; baseline=<ID> overrides once; omitted follows default. "
+    "Clearing the default retains saved versions. fork_label names a new branch; list_sessions and results identify its saved baseline. Existing session_id continuation keeps its history."
 )
 
 mcp = MCPServer[Registry | HubClient]("agent-bridge", instructions=INSTRUCTIONS, lifespan=lifespan)
@@ -130,9 +133,35 @@ async def dispatch_task(
     notify_caller: bool = False,
     callback_url: str | None = None,
     callback_secret: str | None = None,
+    baseline: str | None = None,
+    fork_label: str | None = None,
 ) -> dict[str, Any]:
-    """Start a worker turn. Local workers require an absolute existing cwd. Cloud workers ignore cwd and accept optional repo/ref overrides; follow-ups keep their repository/ref. Cloud Cursor model is a model ID; Devin model is a mode, or effort maps off/low/medium/high/max to fast/lite/normal/ultra/ultra. Remote results carry provider IDs, URLs and PRs rather than local file changes. Cancelling Devin terminates the remote session permanently. Local model/effort behavior is unchanged. Pass session_id to continue. Set user_requested=true only when the user explicitly asked for a worker (required in manual mode). Rejected when coordinator.dispatch_enabled is false. For retry deduplication, supply a UUID request_id on the first call and replay the same ID and original arguments; identical retries reuse the task, different arguments are rejected. Bindings are lost on restart and are not shared with other instances. Returns immediately."""
-    return await _service(ctx).dispatch_task(agent=agent, message=message, cwd=cwd, session_id=session_id, model=model, effort=effort, title=title, user_requested=user_requested, request_id=request_id, repo=repo, ref=ref, notify_caller=notify_caller, callback_url=callback_url, callback_secret=callback_secret)
+    """Start a worker turn. Local workers require an absolute existing cwd. Cloud workers ignore cwd and accept optional repo/ref overrides; follow-ups keep their repository/ref. Cloud Cursor model is a model ID; Devin model is a mode, or effort maps off/low/medium/high/max to fast/lite/normal/ultra/ultra. Remote results carry provider IDs, URLs and PRs rather than local file changes. Cancelling Devin terminates the remote session permanently. Local model/effort behavior is unchanged. Pass session_id to continue. Set user_requested=true only when the user explicitly asked for a worker (required in manual mode). Rejected when coordinator.dispatch_enabled is false. For retry deduplication, supply a UUID request_id on the first call and replay the same ID and original arguments; identical retries reuse the task, different arguments are rejected. Bindings are lost on restart and are not shared with other instances. DSH Desktop supports baseline IDs, default or empty for new sessions; fork_label names the child. Returns immediately."""
+    return await _service(ctx).dispatch_task(agent=agent, message=message, cwd=cwd, session_id=session_id, model=model, effort=effort, title=title, user_requested=user_requested, request_id=request_id, repo=repo, ref=ref, notify_caller=notify_caller, callback_url=callback_url, callback_secret=callback_secret, baseline=baseline, fork_label=fork_label)
+
+
+@mcp.tool()
+async def create_baseline(
+    ctx: Context, session_id: str, name: str, description: str | None = None,
+    user_requested: bool = False,
+) -> dict[str, Any]:
+    """Save an immutable DSH baseline from an idle completed Desktop session. Does not change the default. Requires a reachable Desktop Host. user_requested follows coordinator manual-mode rules."""
+    return await _service(ctx).create_baseline(session_id=session_id, name=name, description=description,
+                                               user_requested=user_requested)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_baselines(ctx: Context, cwd: str, agent: str = "dsh") -> dict[str, Any]:
+    """List saved baseline versions and the persistent default for this project and worker."""
+    return await _service(ctx).list_baselines(cwd=cwd, agent=agent)
+
+
+@mcp.tool()
+async def set_default_baseline(
+    ctx: Context, cwd: str, baseline_id: str | None, agent: str = "dsh",
+) -> dict[str, Any]:
+    """Select a persistent default for new sessions. null clears the default without deleting saved versions. Existing sessions and accepted tasks keep their history."""
+    return await _service(ctx).set_default_baseline(cwd=cwd, agent=agent, baseline_id=baseline_id)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -147,13 +176,15 @@ async def invoke_agent(
     session_id: str | None = None, model: str | None = None, effort: str | None = None,
     repo: str | None = None, ref: str | None = None, user_requested: bool = False,
     timeout_sec: float | None = None,
+    baseline: str | None = None, fork_label: str | None = None,
 ) -> dict[str, Any]:
     """Call a worker and wait for its terminal result, with periodic MCP progress. No default wait cap. Some clients impose absolute tool deadlines: use dispatch_task with async notification instead. A timeout returns the running task ID; it does not cancel work."""
     if timeout_sec is not None and timeout_sec < 0:
         return _error(ValueError('timeout_sec must be non-negative'))
     service = _service(ctx)
     result = await service.dispatch_task(agent=agent, message=message, cwd=cwd,
-        session_id=session_id, model=model, effort=effort, repo=repo, ref=ref, user_requested=user_requested)
+        session_id=session_id, model=model, effort=effort, repo=repo, ref=ref, user_requested=user_requested,
+        baseline=baseline, fork_label=fork_label)
     if not result['ok']:
         return result
 

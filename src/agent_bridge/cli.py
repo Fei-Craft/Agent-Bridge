@@ -243,6 +243,8 @@ def hub_command(args: list[str]) -> None:
         parser.add_argument('--repo', default=argparse.SUPPRESS, help='cloud repository URL')
         parser.add_argument('--ref', default=argparse.SUPPRESS, help='cloud repository starting ref')
         parser.add_argument('--session-id', default=argparse.SUPPRESS, help='continue a Bridge session')
+        parser.add_argument('--baseline', default=argparse.SUPPRESS, help='DSH baseline ID, default or empty')
+        parser.add_argument('--fork-label', default=argparse.SUPPRESS, help='name a DSH fork')
         options = parser.parse_args(args[1:])
         tool, values = 'invoke', vars(options)
         if values.get('callback_secret'):
@@ -321,6 +323,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
 
     command = args[0]
+    if command == '_dsh-ipc' and sys.platform == 'win32' and len(args) == 2:
+        from agent_bridge.desktop_pipe import relay_stdio
+
+        relay_stdio(Path(args[1]))
+        return
     if command in {'approvals', 'tunnel'}:
         import asyncio
 

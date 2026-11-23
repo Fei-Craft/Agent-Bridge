@@ -18,13 +18,16 @@ def test_tools_registered():
     assert names == [
         "cancel_task",
         "check_task",
+        "create_baseline",
         "dispatch_task",
         "end_session",
         "get_result",
         "get_transcript",
         "invoke_agent",
         "list_agents",
+        "list_baselines",
         "list_sessions",
+        "set_default_baseline",
         "set_preferences",
         "wait_task",
     ]
