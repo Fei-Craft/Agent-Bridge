@@ -289,6 +289,25 @@ async def test_shallow_caller_cannot_reset_saved_session_depth(gateway, tmp_path
     assert session.call_depth == 3
 
 
+async def test_shutdown_releases_pending_approvals(gateway):
+    client, registry, _, _ = gateway
+    registry.config.hub.remote.require_approval = True
+    pending = asyncio.create_task(client.post('/v1/tasks', json=payload()))
+    try:
+        async def ready():
+            while not registry.remote.approvals:
+                await asyncio.sleep(0)
+        await asyncio.wait_for(ready(), 2)
+        await registry.stop()
+        response = await asyncio.wait_for(pending, 0.2)
+        assert response.status_code == 403
+        assert not registry.remote.approvals
+        assert not any(task.agent == 'fake' for task in registry.tasks.values())
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
 async def test_chunked_body_limit_and_public_url_validation(gateway):
     client, registry, _, _ = gateway
     registry.remote.config.max_body_bytes = 10

@@ -75,6 +75,7 @@ class RemoteGateway:
         self.config = registry.config.hub.remote
         self.scopes: dict[str, TokenScope] = {}
         self.approvals: dict[str, Approval] = {}
+        self._closing = False
         self._unauthenticated_audit: deque[float] = deque()
         self.workspaces: dict[str, str] = {}
         if self.config.enabled:
@@ -207,7 +208,15 @@ class RemoteGateway:
         item.event.set()
         return {'ok': True, 'approval_id': approval_id, 'status': item.status}
 
+    def close(self) -> None:
+        self._closing = True
+        for item in self.approvals.values():
+            if item.status == 'pending':
+                self.decide(item.approval_id, False)
+
     async def approve(self, scope: TokenScope, agent: str, workspace: str, message: str) -> None:
+        if self._closing:
+            raise Rejected(503, 'remote gateway shutting down')
         if not self.config.require_approval:
             return
         item = Approval('approval_' + secrets.token_hex(8), scope, agent, workspace, message)

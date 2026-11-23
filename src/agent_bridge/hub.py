@@ -225,6 +225,7 @@ def serve(host: str | None = None, port: int | None = None, allow_remote: bool =
                 try:
                     await asyncio.wait({*running, stopped}, return_when=asyncio.FIRST_COMPLETED)
                 finally:
+                    registry.remote.close()
                     admin_server.should_exit = gateway_server.should_exit = True
                     await asyncio.gather(*running)
                     stopped.cancel()

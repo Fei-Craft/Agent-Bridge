@@ -550,6 +550,7 @@ class Registry:
 
     async def stop(self) -> None:
         self._stopping = True
+        self.remote.close()
         await self.deliveries.stop()
         await self._quota_cache.close()
         watchdog = self._watchdog
