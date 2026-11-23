@@ -27,7 +27,6 @@ from agent_bridge.quota import (
     QuotaStatus,
     QuotaWindow,
     as_float,
-    clamp_percent,
     get_json,
     summarize_quota,
     unknown_quota,
@@ -125,8 +124,8 @@ def parse_kimi_usage(payload: Mapping[str, Any] | None) -> QuotaStatus:
                 continue
             used_ratio = as_float(entry.get("used_ratio"))
             if used_ratio is not None and math.isfinite(used_ratio):
-                remaining = clamp_percent((1 - used_ratio) * 100)
-                windows.append(window_from_reset(name, remaining, entry.get("reset_time")))
+                remaining_percent = (1 - min(max(used_ratio, 0.0), 1.0)) * 100
+                windows.append(window_from_reset(name, remaining_percent, entry.get("reset_time")))
     if windows:
         return summarize_quota(windows, source=SOURCE)
 

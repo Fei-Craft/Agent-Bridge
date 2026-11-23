@@ -448,6 +448,12 @@ def test_parse_kimi_usage_ignores_invalid_managed_windows_and_monthly_breakdown(
     assert status.status == "unknown"
 
 
+def test_parse_kimi_usage_does_not_round_remaining_quota_to_zero():
+    status = parse_kimi_usage({"usages": {"limit_5h": {"used_ratio": 0.99998}}})
+    assert status.status == "ok"
+    assert status.windows[0].remaining_percent == pytest.approx(0.002)
+
+
 @pytest.mark.asyncio
 async def test_kimi_provider_explains_api_key_sessions(tmp_path: Path):
     status = await fetch_kimi_quota(
