@@ -37,13 +37,13 @@ class _EmbeddedServer(uvicorn.Server):
         yield
 
 
-def validate_host(host: str, allow_remote: bool = False) -> None:
+def validate_host(host: str) -> None:
     try:
         loopback = host == 'localhost' or ipaddress.ip_address(host).is_loopback
     except ValueError:
         loopback = False
-    if not loopback and not allow_remote:
-        raise ValueError('non-loopback host requires --allow-remote')
+    if not loopback:
+        raise ValueError('management API must bind a loopback host; --allow-remote is no longer supported')
 
 
 def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1:8765', token: str | None = None) -> Starlette:
@@ -52,7 +52,8 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
     registry.dispatch_enabled = True
     registry.config.server.idle_exit_sec = 0
     secret = remember(token or secrets.token_urlsafe(32))
-    registry.deliveries.worker_context = {'AGENT_BRIDGE_HUB_URL': url, 'AGENT_BRIDGE_HUB_TOKEN': secret}
+    registry.worker_url = url
+    registry.deliveries.worker_context = {'AGENT_BRIDGE_HUB_URL': url}
     call_depth: ContextVar[int] = ContextVar('call_depth', default=0)
 
     class HubService(BridgeService):
@@ -94,8 +95,16 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
 
     def endpoint(tool: str):
         async def handle(request: Request):
-            if not secrets.compare_digest(request.headers.get('authorization', ''), f'Bearer {secret}') and not dashboard.authorized(request, tool):
+            authorization = request.headers.get('authorization', '')
+            owner = secrets.compare_digest(authorization, f'Bearer {secret}') or dashboard.authorized(request, tool)
+            caller = None
+            if not owner and authorization.startswith('Bearer '):
+                caller = registry.worker_tokens.authenticate(authorization.removeprefix('Bearer '))
+            if not owner and caller is None:
                 return JSONResponse(_error(PermissionError('invalid bearer token')), status_code=401)
+            if caller is not None and tool not in {'health', 'list_agents', 'dispatch_task', 'invoke',
+                    'check_task', 'wait_task', 'get_result', 'get_transcript', 'cancel_task'}:
+                return JSONResponse(_error(PermissionError('worker token cannot access this tool')), status_code=403)
             if tool == 'health':
                 return JSONResponse({'ok': True})
             try:
@@ -107,6 +116,20 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                     if body:
                         args.update(json.loads(body))
                 args.update(request.path_params)
+                if 'callback_secret' in args:
+                    raise ValueError('raw callback_secret is not accepted; use callback_secret_name from the keyring')
+                if caller is not None:
+                    if tool in {'check_task', 'wait_task', 'get_result', 'cancel_task'}:
+                        task = registry.tasks.get(args.get('task_id', ''))
+                        if task is None or task.caller_session_id != caller:
+                            return JSONResponse(_error(PermissionError('task is not owned by caller')), status_code=403)
+                    if tool == 'get_transcript' or (tool in {'dispatch_task', 'invoke'} and args.get('session_id')):
+                        sid = args.get('session_id')
+                        session = registry.sessions.get(sid or '')
+                        if sid != caller and (session is None or session.caller_session_id != caller):
+                            return JSONResponse(_error(PermissionError('session is not owned by caller')), status_code=403)
+                        if tool == 'get_transcript' and sid == caller:
+                            return JSONResponse(_error(PermissionError('session is not owned by caller')), status_code=403)
                 for key in ('cursor', 'max_chars', 'offset', 'limit'):
                     if key in args:
                         args[key] = int(args[key])
@@ -117,7 +140,6 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                         if args[key] not in ('true', 'false'):
                             raise ValueError(f'{key} must be true or false')
                         args[key] = args[key] == 'true'
-                caller = request.headers.get('x-agent-bridge-caller')
                 depth = 0
                 if caller and tool in ('dispatch_task', 'invoke'):
                     if caller not in registry.sessions:
@@ -128,11 +150,11 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                     if caller_task and caller_task.notification_source_task_id:
                         args['notify_caller'] = False
                         args.pop('callback_url', None)
-                        args.pop('callback_secret', None)
+                        args.pop('callback_secret_name', None)
                     depth = registry.sessions[caller].call_depth + 1
                     if depth > registry.config.hub.max_depth:
                         raise ValueError('hub max_depth exceeded')
-                context = hub_worker_context.set({'AGENT_BRIDGE_HUB_URL': url, 'AGENT_BRIDGE_HUB_TOKEN': secret})
+                context = hub_worker_context.set({'AGENT_BRIDGE_HUB_URL': url})
                 depth_context = call_depth.set(depth)
                 caller_context = caller_session_context.set(caller)
                 try:
@@ -193,18 +215,18 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
     return app
 
 
-def serve(host: str | None = None, port: int | None = None, allow_remote: bool = False) -> None:
+def serve(host: str | None = None, port: int | None = None) -> None:
     registry = Registry.create(runtime_context='coordinator')
     host = host or registry.config.hub.host
     port = port if port is not None else registry.config.hub.port
-    validate_host(host, allow_remote and not registry.config.hub.remote.enabled)
+    validate_host(host)
     if registry.config.hub.remote.enabled and registry.config.hub.remote.port == port:
         raise ValueError('remote gateway and admin must use separate ports')
     registry.config.hub.port = port
     url_host = f'[{host}]' if ':' in host else host
     app = create_app(registry, url=f'http://{url_host}:{port}')
     if not registry.config.hub.remote.enabled:
-        uvicorn.run(app, host=host, port=port)
+        uvicorn.run(app, host=host, port=port, access_log=False)
         return
 
     async def run():

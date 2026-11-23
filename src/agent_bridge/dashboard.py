@@ -112,6 +112,12 @@ class Dashboard:
                 response.delete_cookie(COOKIE, path='/', httponly=True, samesite='strict')
                 return response
             remote = self.registry.config.hub.remote
+            workspaces: dict[str, str | None] = {}
+            for name, workspace in remote.remote_workspaces.items():
+                try:
+                    workspaces[name] = str(Path(workspace).expanduser().resolve())
+                except (OSError, RuntimeError):
+                    workspaces[name] = None
             audit = self.registry.home / 'remote-audit.jsonl'
             entries = []
             if audit.is_file():
@@ -128,8 +134,7 @@ class Dashboard:
                     for task in sorted(self.registry.tasks.values(), key=lambda t: t.created_at, reverse=True)][:500],
                 'remote': {'enabled': remote.enabled, 'public_url': remote.public_url,
                     'agents': remote.remote_callable_agents,
-                    'workspaces': {name: str(Path(path).expanduser().resolve())
-                        for name, path in remote.remote_workspaces.items()},
+                    'workspaces': workspaces,
                     'require_approval': remote.require_approval},
                 'audit': entries, 'approvals': self.registry.remote.list_approvals()['approvals']}))
         files = {'/ui': ('index.html', 'text/html'), '/ui/': ('index.html', 'text/html'),

@@ -52,7 +52,7 @@ from agent_bridge.processes import (
     resolve_command,
 )
 from agent_bridge.transcript import append_event
-from agent_bridge.worker_env import build_worker_env, denied_by_policy
+from agent_bridge.worker_env import build_worker_env, denied_by_policy, hub_worker_context
 from agent_bridge.workspace import collect_update_paths
 from agent_bridge.zcode_meta import (
     ZCODE_MODE_YOLO,
@@ -1007,6 +1007,8 @@ class AcpAdapter(Adapter):
             cmd = with_cursor_cli_model(cmd, session.model)
         env = self._enforce_spawn_env(env)
         kwargs: dict[str, Any] = {}
+        if self.worker_tokens is not None and hub_worker_context.get().get('AGENT_BRIDGE_HUB') != 'off':
+            env['AGENT_BRIDGE_HUB_TOKEN'] = self.worker_tokens.issue(session.session_id)
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         proc = await asyncio.create_subprocess_exec(
@@ -1019,6 +1021,8 @@ class AcpAdapter(Adapter):
             limit=STDIO_LIMIT,
             **kwargs,
         )
+        if self.worker_tokens is not None and 'AGENT_BRIDGE_HUB_TOKEN' in env:
+            self.worker_tokens.processes[session.session_id] = proc
         if proc.stdin is None or proc.stdout is None:
             raise RuntimeError(f"{self.agent.name} did not expose stdio")
         live = _Live()
@@ -1929,6 +1933,8 @@ class AcpAdapter(Adapter):
             await self.shutdown(session)
 
     async def shutdown(self, session: Session) -> None:
+        if self.worker_tokens is not None:
+            self.worker_tokens.revoke(session.session_id)
         live = self._live.pop(session.session_id, None)
         if live is None:
             drop_pid(self.home, session.session_id)

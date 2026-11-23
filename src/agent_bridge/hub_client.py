@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx2
 import psutil
@@ -39,17 +42,19 @@ class HubClient:
     def __init__(self, url: str, token: str = '') -> None:
         self.url = url.rstrip('/')
         self.token = remember(token)
-        self.manual_mode = False
+        self.host_manual_mode = False
 
     async def call(self, tool: str, **kwargs: Any) -> dict[str, Any]:
         try:
-            if self.manual_mode and tool in {'dispatch_task', 'invoke'} and not kwargs.get('user_requested'):
+            if self.host_manual_mode and tool in {'dispatch_task', 'invoke'} and not kwargs.get('user_requested'):
                 raise RuntimeError('coordinator mode is manual: retry with user_requested=true only when the user explicitly requested a worker')
             return await self._call(tool, **kwargs)
         except Exception as exc:
             return _error(exc)
 
     async def _call(self, tool: str, **kwargs: Any) -> dict[str, Any]:
+        if 'callback_secret' in kwargs:
+            raise ValueError('raw callback_secret is not accepted; use callback_secret_name from the keyring')
         if tool == 'invoke':
             timeout = kwargs.pop('timeout_sec', None)
             if timeout is not None and timeout < 0:
@@ -62,20 +67,16 @@ class HubClient:
         if key:
             path = path.format(**{key: kwargs.pop(key)})
         headers = {'Authorization': f'Bearer {self.token}'}
-        caller = os.environ.get('AGENT_BRIDGE_CALLER_SESSION')
-        if caller:
-            headers['X-Agent-Bridge-Caller'] = caller
         async with httpx2.AsyncClient(trust_env=False, timeout=None) as client:
             options: dict[str, Any] = {'params': kwargs} if method == 'GET' else {'json': kwargs}
             response = await client.request(method, self.url + path, headers=headers,
                                             **options)
             result: dict[str, Any] = response.json()
-        if tool == 'set_preferences' and result.get('ok') and kwargs.get('mode') is not None:
-            self.manual_mode = result['coordinator']['mode'] == 'manual'
         if tool == 'list_agents':
             result.update(backend='hub', hub_url=self.url)
-            if self.manual_mode and 'coordinator' in result:
-                result['coordinator']['mode'] = 'manual'
+        if self.host_manual_mode and 'coordinator' in result:
+            result['coordinator']['hub_mode'] = result['coordinator']['mode']
+            result['coordinator']['mode'] = 'manual'
         return result
 
     def __getattr__(self, name: str) -> Any:
@@ -97,6 +98,14 @@ async def discover(home: Path | None = None) -> HubClient | None:
             if not psutil.pid_exists(int(info['pid'])):
                 return None
             url = info['url']
+        parsed = urlsplit(str(url))
+        loopback = parsed.hostname == 'localhost'
+        with suppress(ValueError):
+            loopback = loopback or ipaddress.ip_address(parsed.hostname or '').is_loopback
+        if (not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment
+                or parsed.scheme not in {'http', 'https'} or (parsed.scheme == 'http' and not loopback)):
+            return None
+        _ = parsed.port
         token = token or get(hub_key(home or bridge_home())) or ''
         async with httpx2.AsyncClient(trust_env=False, timeout=2) as client:
             response = await client.get(str(url).rstrip('/') + '/v1/health', headers={'Authorization': f'Bearer {token}'})
