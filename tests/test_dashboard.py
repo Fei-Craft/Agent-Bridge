@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
+import shutil
+import subprocess
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
 
@@ -152,6 +156,51 @@ async def test_ui_native_search_result_available_without_internal_transcript(das
     assert data['tasks'][0]['native_search'] is True
     assert (await client.get(f'/v1/sessions/{sid}/transcript', headers=UI)).status_code == 400
     assert (await client.get(f'/v1/tasks/{tid}/result', headers=UI)).json()['result_text'] == 'Search result'
+
+
+async def test_ui_renders_partial_result_and_error(dashboard, tmp_path):
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js is needed to execute dashboard JavaScript')
+    client, _, registry = dashboard
+    await login(client)
+    tid = 'task_failed_search'
+    registry.tasks[tid] = Task(
+        task_id=tid, session_id='sess_search', agent='codex', cwd=str(tmp_path), message='Find public sources',
+        native_search=True, search_finalized=True, status=TaskStatus.failed, result_text='Partial findings',
+        error='Search requires attributable sources.',
+    )
+    script = (await client.get('/ui/app.js')).text
+    result = (await client.get(f'/v1/tasks/{tid}/result', headers=UI)).json()
+    run = await asyncio.to_thread(subprocess.run, [node, '-e', r"""
+const {script, result} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const elements = new Map();
+const document = {
+  querySelectorAll: () => [],
+  getElementById(id) {
+    if (!elements.has(id)) elements.set(id, {addEventListener() {}});
+    return elements.get(id);
+  },
+};
+vm.runInNewContext(script.replace(/^initialize\(\);$/m, '') + `
+  api = async path => {
+    assert.match(path, /result[?]/);
+    return result;
+  };
+  (async () => {
+    await openTask({task_id: result.task_id, native_search: true});
+    assert.equal($('result').textContent, 'Partial findings');
+    assert.match($('detail-meta').textContent, /Search requires attributable sources/);
+    result.result_text = ' with details';
+    await loadResult(true);
+    assert.equal($('result').textContent, 'Partial findings with details');
+    assert.match($('detail-meta').textContent, /Search requires attributable sources/);
+  })();
+`, {assert, document, result, setInterval() {}});
+"""], input=json.dumps({'script': script, 'result': result}), text=True, capture_output=True, timeout=10, check=False)
+    assert run.returncode == 0, run.stderr
 
 
 def test_cli_open_and_no_open(monkeypatch, capsys):

@@ -94,9 +94,10 @@ async function loadResult(append = false) {
   const data = await api('/v1/tasks/' + taskId + '/result?cursor=' + (append ? resultCursor : 0));
   if (selected?.task_id !== taskId) return;
   $('detail-meta').textContent = '代理: ' + data.agent + ' · 状态: ' + (labels[data.status] || data.status) + '\n' + delivery(data) +
-    '\n远程: ' + JSON.stringify(data.remote || {}) + '\n文件: ' + JSON.stringify(data.files_changed || []);
+    '\n远程: ' + JSON.stringify(data.remote || {}) + '\n文件: ' + JSON.stringify(data.files_changed || []) +
+    (data.error ? '\n错误: ' + data.error : '');
   if (append) $('result').textContent += data.result_text || '';
-  else $('result').textContent = data.result_text || data.error || '任务尚未产生结果';
+  else $('result').textContent = data.result_text || (data.error ? '' : '任务尚未产生结果');
   resultCursor = data.next_cursor || 0;
   $('more-result').hidden = !data.has_more;
 }
