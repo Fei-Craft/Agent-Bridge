@@ -11,6 +11,7 @@ import httpx2
 import pytest
 
 from agent_bridge import cli, server
+from agent_bridge import secrets as vault
 from agent_bridge.adapters.acp import AcpAdapter
 from agent_bridge.config import AgentConfig, EnvConfig, load_config
 from agent_bridge.hub import create_app, validate_host
@@ -82,6 +83,19 @@ async def test_lifecycle_cleanup(bridge_home):
     async with app.router.lifespan_context(app):
         assert (bridge_home / 'hub.json').exists()
     assert not (bridge_home / 'hub.json').exists()
+
+
+async def test_second_hub_cannot_replace_live_discovery(hub, bridge_home):
+    client, _ = hub
+    before = (bridge_home / 'hub.json').read_bytes()
+    token = vault.get(vault.hub_key(bridge_home))
+    other = create_app(Registry.create(bridge_home))
+    with pytest.raises((RuntimeError, TimeoutError)):
+        async with other.router.lifespan_context(other):
+            pass
+    assert (bridge_home / 'hub.json').read_bytes() == before
+    assert vault.get(vault.hub_key(bridge_home)) == token
+    assert (await client.get('/v1/health')).status_code == 200
 
 
 async def test_acp_echo_and_spawn_environment(hub, tmp_path, monkeypatch):

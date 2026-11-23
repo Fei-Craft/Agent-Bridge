@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
+import psutil
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -23,6 +24,7 @@ from agent_bridge.api import BridgeService, _error, wait_for_result
 from agent_bridge.dashboard import Dashboard, DashboardHeaders
 from agent_bridge.hub_client import ROUTES
 from agent_bridge.paths import ensure_home
+from agent_bridge.persist import file_lock, read_json
 from agent_bridge.registry import Registry
 from agent_bridge.remote import create_remote_app
 from agent_bridge.secrets import delete, hub_key, remember, set_secret
@@ -68,21 +70,27 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
     @asynccontextmanager
     async def lifespan(app: Starlette):
         path = registry.home / 'hub.json'
-        await registry.start()
-        set_secret(hub_key(registry.home), secret)
-        try:
-            with tempfile.NamedTemporaryFile(mode='w', dir=registry.home, delete=False) as file:
-                temporary = file.name
-                json.dump(dict(url=url, pid=os.getpid(), started_at=datetime.now(UTC).isoformat()), file)
-            os.replace(temporary, path)
-            yield
-        finally:
+        with file_lock(registry.home / 'hub.lock', timeout_sec=0):
+            previous = read_json(path, {})
+            pid = previous.get('pid') if isinstance(previous, dict) else None
+            if isinstance(pid, int) and pid > 0 and psutil.pid_exists(pid):
+                raise RuntimeError('a hub is already running for this bridge home')
+            await registry.start()
+            record = dict(url=url, pid=os.getpid(), started_at=datetime.now(UTC).isoformat())
+            set_secret(hub_key(registry.home), secret)
             try:
-                if path.exists() and json.loads(path.read_text()).get('pid') == os.getpid():
-                    path.unlink()
-                    delete(hub_key(registry.home))
+                with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=registry.home, delete=False) as file:
+                    temporary = file.name
+                    json.dump(record, file)
+                os.replace(temporary, path)
+                yield
             finally:
-                await registry.stop()
+                try:
+                    if read_json(path, {}) == record:
+                        path.unlink()
+                        delete(hub_key(registry.home))
+                finally:
+                    await registry.stop()
 
     def endpoint(tool: str):
         async def handle(request: Request):
