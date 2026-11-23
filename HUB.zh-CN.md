@@ -43,7 +43,7 @@ worker 自动继承 Hub 地址、token、调用者 session id，嵌套 MCP 也�
 严格遵守 **NO plaintext secrets anywhere on disk (keys, hub token, callback secrets, issued tokens)**。
 使用 `agent-bridge` keyring 服务，只接受安全的 OS 后端，不使用明文文件后端。
 `agent-bridge secrets set cursor` / `set devin` 使用 getpass 隐藏输入；`secrets list`
-仅显示是否存在；`secrets delete cursor` 删除。修改后重启 Hub。`ask --callback-secret`
+仅显示是否存在；`secrets delete cursor` 删除。修改后重启 Hub。回调签名密钥至少需要 32 个字符。`ask --callback-secret`
 同样隐藏输入，不要把密钥放在命令参数、shell 历史、配置、URL 或提示词中。
 如果 keyring 不可用/锁定，明确警告，只保存在内存中，绝不回退到文件。
 此时独立 CLI/MCP 进程无法发现 Hub 的内存 token，需先配置/解锁安全的 OS keyring；

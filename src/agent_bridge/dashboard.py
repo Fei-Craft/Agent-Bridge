@@ -127,7 +127,9 @@ class Dashboard:
                     'message', 'created_at', 'caller_delivery', 'callback_delivery'})
                     for task in sorted(self.registry.tasks.values(), key=lambda t: t.created_at, reverse=True)][:500],
                 'remote': {'enabled': remote.enabled, 'public_url': remote.public_url,
-                    'agents': remote.remote_callable_agents, 'workspaces': remote.remote_workspaces,
+                    'agents': remote.remote_callable_agents,
+                    'workspaces': {name: str(Path(path).expanduser().resolve())
+                        for name, path in remote.remote_workspaces.items()},
                     'require_approval': remote.require_approval},
                 'audit': entries, 'approvals': self.registry.remote.list_approvals()['approvals']}))
         files = {'/ui': ('index.html', 'text/html'), '/ui/': ('index.html', 'text/html'),
