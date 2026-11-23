@@ -323,6 +323,35 @@ async def test_shutdown_preserves_remote(cloud_registry, provider, name, phase, 
 
 
 @pytest.mark.parametrize('name', ['cursor', 'devin'])
+async def test_shutdown_handles_suppressed_http_cancellation(cloud_registry, provider, name, monkeypatch):
+    provider[1].cursor_status, provider[1].detail = 'RUNNING', 'working'
+    ready = asyncio.Event()
+    original = httpx2.AsyncClient.request
+    swallowed = False
+
+    async def request(client, method, url, **kwargs):
+        nonlocal swallowed
+        response = await original(client, method, url, **kwargs)
+        if method == 'GET' and not ready.is_set():
+            ready.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                swallowed = True
+        return response
+
+    monkeypatch.setattr(httpx2.AsyncClient, 'request', request)
+    monkeypatch.setattr('agent_bridge.registry.STOP_TASK_GRACE_SEC', 0.1)
+    dispatched = await cloud_registry.dispatch_task(name, 'keep remote alive')
+    await asyncio.wait_for(ready.wait(), 5)
+    await cloud_registry.stop()
+    assert swallowed
+    assert dispatched['task_id'] not in cloud_registry._bg
+    assert not any(method == 'DELETE' or path.endswith(('/archive', '/cancel'))
+                   for method, path, _ in provider[1].requests)
+
+
+@pytest.mark.parametrize('name', ['cursor', 'devin'])
 async def test_idle_shutdown_preserves_remote_and_explicit_end(cloud_registry, provider, name):
     first = await turn(cloud_registry, name)
     sid = first['session_id']
