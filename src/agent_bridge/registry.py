@@ -901,8 +901,8 @@ class Registry:
             "task_id": task.task_id,
             "session_id": session.session_id,
             "agent": agent,
-            "model": session.model,
-            "effort": session.effort,
+            "model": task.model,
+            "effort": task.effort,
             "persisted": persisted,
             **({"request_id": request_id, "reused": False} if request_id is not None else {}),
         }

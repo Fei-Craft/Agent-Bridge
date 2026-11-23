@@ -5,6 +5,7 @@ import json
 import re
 import threading
 import types
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
 from unittest.mock import AsyncMock
@@ -191,6 +192,20 @@ async def test_rejected_devin_mode_does_not_poison_followups(cloud_registry):
     assert session.model == 'fast'
     resumed = await turn(cloud_registry, 'devin', session_id=session.session_id)
     assert resumed['status'] == 'completed'
+
+
+@pytest.mark.parametrize('name', ['cursor', 'devin'])
+async def test_dispatch_acknowledges_task_preferences_on_fresh_followup_and_retry(cloud_registry, name):
+    session_id = None
+    for model, effort in [('fast', 'low'), ('normal', 'medium')]:
+        args = {'agent': name, 'message': 'preferences', 'model': model, 'effort': effort,
+                'request_id': str(uuid.uuid4()), 'session_id': session_id}
+        first = await cloud_registry.dispatch_task(**args)
+        assert first['model'] == model and first['effort'] == effort
+        retry = await cloud_registry.dispatch_task(**args)
+        assert retry == {**first, 'reused': True}
+        await cloud_registry.wait_task(first['task_id'], timeout_sec=5)
+        session_id = first['session_id']
 
 
 def progress_event(monkeypatch, predicate):
