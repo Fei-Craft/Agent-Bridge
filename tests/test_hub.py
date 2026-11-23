@@ -132,6 +132,32 @@ async def test_worker_cannot_use_owner_callback_secret(worker, tmp_path, route):
     assert registry.tasks[response.json()['task_id']].callback_signed
 
 
+@pytest.mark.parametrize('route', ['/v1/tasks', '/v1/agents/fake/invoke'])
+async def test_worker_turn_ends_while_reading_body(worker, tmp_path, monkeypatch, route):
+    client, registry, root, env = worker
+    authenticated = asyncio.Event()
+    authenticate = registry.worker_tokens.authenticate
+
+    def check(token):
+        result = authenticate(token)
+        if result is not None:
+            authenticated.set()
+        return result
+
+    monkeypatch.setattr(registry.worker_tokens, 'authenticate', check)
+    before = set(registry.tasks)
+
+    async def body():
+        await asyncio.wait_for(authenticated.wait(), 5)
+        registry.worker_tokens.active.discard(root['session_id'])
+        yield json.dumps({'agent': 'fake', 'message': 'late child', 'cwd': str(tmp_path)}).encode()
+
+    response = await client.post(route, content=body(), headers={'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + env['AGENT_BRIDGE_HUB_TOKEN']})
+    assert response.status_code == 401
+    assert set(registry.tasks) == before
+
+
 @pytest.mark.parametrize(('method', 'path', 'body'), [
     ('POST', '/v1/approvals/forged/approve', {}),
     ('POST', '/v1/approvals/forged/deny', {}),

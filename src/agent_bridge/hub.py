@@ -113,6 +113,8 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                 args: dict[str, Any] = dict(request.query_params)
                 if request.method in ('POST', 'PUT'):
                     body = await request.body()
+                    if caller is not None and registry.worker_tokens.authenticate(authorization.removeprefix('Bearer ')) != caller:
+                        return JSONResponse(_error(PermissionError('invalid bearer token')), status_code=401)
                     if body:
                         args.update(json.loads(body))
                 args.update(request.path_params)
