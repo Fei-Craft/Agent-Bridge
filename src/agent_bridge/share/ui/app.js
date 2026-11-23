@@ -72,6 +72,11 @@ function renderGateway() {
 }
 async function loadTranscript() {
   if (!selected) return;
+  if (selected.native_search) {
+    $('transcript').textContent = '原生搜索的内部会话不显示记录。';
+    $('more-transcript').hidden = true;
+    return;
+  }
   const taskId = selected.task_id;
   const data = await api('/v1/sessions/' + selected.session_id + '/transcript?offset=' + transcriptOffset + '&limit=100');
   if (selected?.task_id !== taskId) return;

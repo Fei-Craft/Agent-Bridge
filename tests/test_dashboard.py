@@ -10,6 +10,7 @@ import pytest
 from agent_bridge import cli
 from agent_bridge.dashboard import COOKIE, HEADERS
 from agent_bridge.hub import create_app
+from agent_bridge.models import Session, Task, TaskStatus
 from agent_bridge.registry import Registry
 from agent_bridge.remote import create_remote_app
 
@@ -135,6 +136,22 @@ async def test_ui_task_flow_and_redacted_audit(dashboard, tmp_path):
     data = (await client.get('/ui/data', headers=UI)).json()
     assert data['audit'][0]['cf_ray'] == '[REDACTED]'
     assert (await client.get('/v1/agents', headers=UI)).json()['agents'][0]['protocol'] == 'fake'
+
+
+async def test_ui_native_search_result_available_without_internal_transcript(dashboard, tmp_path):
+    client, _, registry = dashboard
+    _, response = await login(client)
+    assert response.status_code == 200
+    sid, tid = "sess_search", "task_search"
+    registry.sessions[sid] = Session(session_id=sid, agent="codex", cwd=str(tmp_path), native_search=True)
+    registry.tasks[tid] = Task(
+        task_id=tid, session_id=sid, agent="codex", cwd=str(tmp_path), message="Find public sources",
+        native_search=True, search_finalized=True, status=TaskStatus.completed, result_text="Search result",
+    )
+    data = (await client.get('/ui/data', headers=UI)).json()
+    assert data['tasks'][0]['native_search'] is True
+    assert (await client.get(f'/v1/sessions/{sid}/transcript', headers=UI)).status_code == 400
+    assert (await client.get(f'/v1/tasks/{tid}/result', headers=UI)).json()['result_text'] == 'Search result'
 
 
 def test_cli_open_and_no_open(monkeypatch, capsys):
