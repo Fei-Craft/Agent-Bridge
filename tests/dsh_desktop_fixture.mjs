@@ -32,6 +32,8 @@ const controller = {
     const turn = history.length
     stream.emit('frame', { type: 'turn/start', data: { turn } })
     stream.emit('frame', { type: 'user/message', data: { source: { rpcId: requestId } } })
+    stream.emit('frame', { type: 'tool/call', data: { callId: 'example', name: 'list', arguments: '{}' } })
+    stream.emit('frame', { type: 'tool/result', data: { message: { toolCallId: 'example', isError: false } } })
     stream.emit('frame', { type: 'assistant/message', data: {
       message: { content: [{ type: 'text', text: history.join(' ') }] },
     } })

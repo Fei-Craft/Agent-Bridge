@@ -80,7 +80,15 @@ async def test_hub_lifecycle_through_desktop_connector(tmp_path):
                 assert (await client.get('/v1/baselines', headers={"Authorization": "invalid"})).status_code == 401
                 body = {"agent": "dsh", "cwd": str(tmp_path), "message": "seed"}
                 source = (await client.post('/v1/agents/dsh/invoke', json=body)).json()
-                assert source["result_text"] == "seed", source
+                assert source["result_text"] == "seed", (source["status"], source.get("stop_reason"), source.get("error"))
+                transcript = (await client.get(f'/v1/sessions/{source["session_id"]}/transcript')).json()["events"]
+                assert [(event["type"], event["data"]) for event in transcript if event["type"] in {
+                    "message_chunk", "tool_call", "tool_call_update",
+                }] == [
+                    ("tool_call", {"tool_call_id": "example", "title": "list"}),
+                    ("tool_call_update", {"tool_call_id": "example", "status": "completed"}),
+                    ("message_chunk", {"text": "seed"}),
+                ]
                 saved = (await client.post('/v1/baselines', json={
                     "session_id": source["session_id"], "name": "Baseline",
                 })).json()

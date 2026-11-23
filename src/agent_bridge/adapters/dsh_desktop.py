@@ -83,7 +83,20 @@ class DesktopAdapter(Adapter):
                     continue
                 mark_worker_activity(session.session_id, self.home)
                 if kind == "assistant/message":
-                    text_parts.append(_message_text(event))
+                    text = _message_text(event)
+                    text_parts.append(text)
+                    if text:
+                        append_event(session.session_id, "message_chunk", {"text": text}, self.home)
+                elif kind == "tool/call":
+                    append_event(session.session_id, "tool_call", {
+                        "tool_call_id": data.get("callId"), "title": data.get("name"),
+                    }, self.home)
+                elif kind == "tool/result":
+                    message = data.get("message", {})
+                    append_event(session.session_id, "tool_call_update", {
+                        "tool_call_id": message.get("toolCallId"),
+                        "status": "failed" if message.get("isError") else "completed",
+                    }, self.home)
                 elif kind == "turn/end" and data.get("turn") == active_turn:
                     reason = data.get("reason", {})
                     stop = reason.get("kind", "completed")
