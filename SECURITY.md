@@ -80,6 +80,9 @@ after dispatch; it refuses memory-only storage that another process cannot read.
 Signing secrets require at least 32 characters. Tasks keep only a signed boolean.
 Named callback signing keys are admin-only; worker bearers cannot request a
 callback signed with an owner's keyring entry.
+Named-key lookups read the keyring authoritatively and fail closed if unavailable;
+cached values do not survive external deletion. Per-task delivery secrets retain
+their documented RAM-only fallback.
 
 Remote gateway tokens expire after 3600 seconds by default, independent of cloud
 turn timeouts (`hub.remote.token_ttl_sec` overrides this). The token is included

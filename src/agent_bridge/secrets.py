@@ -83,12 +83,16 @@ def _backend():
     raise RuntimeError('no secure keyring backend')
 
 
-def get(name: str) -> str | None:
+def get(name: str, *, authoritative: bool = False) -> str | None:
     try:
         value = _backend().get_password(SERVICE, name)
         if value:
             _memory[name] = remember(value)
+        elif authoritative:
+            _memory.pop(name, None)
     except Exception:
+        if authoritative:
+            _memory.pop(name, None)
         _warn('backend', 'No usable secure keyring; secrets stay in memory only and are unavailable to other processes/restarts. No plaintext fallback is written.')
     return _memory.get(name)
 
@@ -130,7 +134,7 @@ def callback_secret_key(name: str) -> str:
 def load_callback_secret(name: str | None) -> str | None:
     if name is None:
         return None
-    value = get(callback_secret_key(name))
+    value = get(callback_secret_key(name), authoritative=True)
     if value is None:
         raise ValueError('callback_secret_name not found in keyring')
     if len(value) < 32:
