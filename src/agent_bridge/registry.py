@@ -823,16 +823,16 @@ class Registry:
                     cwd=resolved_cwd,
                     repo=repo if repo is not None else (agent_cfg.cloud.repo if agent_cfg.cloud else None),
                     ref=ref if ref is not None else (agent_cfg.cloud.ref if agent_cfg.cloud else None),
-                    model=model,
-                    effort=effort,
+                    model=None if cloud else model,
+                    effort=None if cloud else effort,
                     title=title,
                     proc_state=ProcState.spawning,
                 )
                 self._stamp_owner(session)
                 self.sessions[session.session_id] = session
-            if model:
+            if model and not cloud:
                 session.model = model
-            if effort:
+            if effort and not cloud:
                 session.effort = effort
             if title:
                 session.title = title
