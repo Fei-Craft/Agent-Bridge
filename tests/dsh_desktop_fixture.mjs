@@ -34,6 +34,13 @@ const controller = {
     stream.emit('frame', { type: 'user/message', data: { source: { rpcId: requestId } } })
     stream.emit('frame', { type: 'tool/call', data: { callId: 'example', name: 'list', arguments: '{}' } })
     stream.emit('frame', { type: 'tool/result', data: { message: { toolCallId: 'example', isError: false } } })
+    stream.emit('frame', { type: 'tool/result', surfaceOp: { op: 'replace', startSeq: 12, endSeq: 12 },
+      data: { message: { toolCallId: 'example', isError: false } } })
+    stream.emit('frame', { type: 'tool/result', surfaceOp: { op: 'replace', startSeq: 4, endSeq: 4 },
+      data: { message: { toolCallId: 'earlier-turn', isError: false } } })
+    stream.emit('frame', { type: 'tool/result', data: { message: { toolCallId: 'example', isError: false } } })
+    stream.emit('frame', { type: 'tool/call', data: { callId: 'other', name: 'read', arguments: '{}' } })
+    stream.emit('frame', { type: 'tool/result', data: { message: { toolCallId: 'other', isError: true } } })
     stream.emit('frame', { type: 'assistant/message', data: {
       message: { content: [{ type: 'text', text: history.join(' ') }] },
     } })

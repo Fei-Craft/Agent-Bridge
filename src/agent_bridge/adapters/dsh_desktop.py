@@ -59,6 +59,7 @@ class DesktopAdapter(Adapter):
             await self.ipc.call("selectModel", selection)
 
         text_parts: list[str] = []
+        completed_tool_calls: set[str] = set()
         request_id = str(uuid.uuid4())
         active_turn: int | None = None
         latest_turn: int | None = None
@@ -93,8 +94,15 @@ class DesktopAdapter(Adapter):
                     }, self.home)
                 elif kind == "tool/result":
                     message = data.get("message", {})
+                    call_id = message.get("toolCallId")
+                    surface_op = event.get("surfaceOp")
+                    if isinstance(surface_op, dict) and surface_op.get("op") == "replace":
+                        continue
+                    if not isinstance(call_id, str) or call_id in completed_tool_calls:
+                        continue
+                    completed_tool_calls.add(call_id)
                     append_event(session.session_id, "tool_call_update", {
-                        "tool_call_id": message.get("toolCallId"),
+                        "tool_call_id": call_id,
                         "status": "failed" if message.get("isError") else "completed",
                     }, self.home)
                 elif kind == "turn/end" and data.get("turn") == active_turn:

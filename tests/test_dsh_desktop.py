@@ -87,6 +87,8 @@ async def test_hub_lifecycle_through_desktop_connector(tmp_path):
                 }] == [
                     ("tool_call", {"tool_call_id": "example", "title": "list"}),
                     ("tool_call_update", {"tool_call_id": "example", "status": "completed"}),
+                    ("tool_call", {"tool_call_id": "other", "title": "read"}),
+                    ("tool_call_update", {"tool_call_id": "other", "status": "failed"}),
                     ("message_chunk", {"text": "seed"}),
                 ]
                 saved = (await client.post('/v1/baselines', json={
