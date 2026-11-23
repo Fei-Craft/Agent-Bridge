@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import warnings
 
 import httpx2
@@ -109,6 +110,35 @@ def test_escaped_secret_redaction(tmp_path):
     path = tmp_path / 'state.json'
     atomic_write_json(path, {'value': value})
     assert json.loads(path.read_text()) == {'value': '[REDACTED]'}
+
+
+def test_migration_uses_utf8_on_ascii_locale(bridge_home, monkeypatch):
+    bridge_home.mkdir()
+    legacy = bridge_home / 'callback-secrets'
+    legacy.mkdir()
+    value = '回调签名密钥-credential'
+    (legacy / 'task_utf8').write_text(value, encoding='utf-8')
+    read = Path.read_text
+
+    def locale_read(path, encoding=None, **kwargs):
+        return read(path, encoding=encoding or 'ascii', **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', locale_read)
+    secrets.migrate(bridge_home)
+    assert secrets.get(secrets.callback_key(bridge_home, 'task_utf8')) == value
+    assert not legacy.exists()
+
+
+def test_migration_skips_unreadable_file_and_continues(bridge_home, monkeypatch):
+    bridge_home.mkdir()
+    directory = bridge_home / 'logs'
+    directory.mkdir()
+    (directory / 'bad.log').write_bytes(b'\xffinvalid UTF8')
+    value = secrets.remember('credential-that-must-be-scrubbed')
+    good = directory / 'good.log'
+    good.write_text(value, encoding='utf-8')
+    secrets.migrate(bridge_home)
+    assert value not in good.read_text(encoding='utf-8')
 
 
 async def test_wait_preview_redacts_in_memory_credentials(bridge_home, tmp_path):

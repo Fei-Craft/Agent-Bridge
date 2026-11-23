@@ -120,30 +120,50 @@ def migrate(home: Path) -> None:
     discovery = home / 'hub.json'
     if discovery.exists():
         try:
-            info = json.loads(discovery.read_text())
+            info = json.loads(discovery.read_text(encoding='utf-8'))
             old_token = info.pop('token', None)
             if old_token:
                 remember(old_token)
                 discovery.unlink()
         except (ValueError, OSError):
-            discovery.unlink(missing_ok=True)
+            try:
+                discovery.unlink(missing_ok=True)
+            except OSError:
+                log.warning('Could not remove legacy discovery file %s', discovery)
     directory = home / 'callback-secrets'
     if directory.is_dir():
-        for path in directory.iterdir():
-            if path.is_file():
-                set_secret(callback_key(home, path.name), path.read_text())
-                path.unlink()
-        directory.rmdir()
+        try:
+            legacy = list(directory.iterdir())
+        except OSError:
+            legacy = []
+            log.warning('Could not list legacy callback secrets %s', directory)
+        for path in legacy:
+            try:
+                if path.is_file():
+                    set_secret(callback_key(home, path.name), path.read_text(encoding='utf-8'))
+                    path.unlink()
+            except (OSError, UnicodeError):
+                log.warning('Could not migrate legacy callback secret %s', path)
+        try:
+            directory.rmdir()
+        except OSError:
+            log.warning('Could not remove legacy callback directory %s', directory)
     from agent_bridge.persist import atomic_write_text
 
     paths = [home / 'state.json', home / 'pids.json']
     for name in ('transcripts', 'results', 'logs'):
         directory = home / name
         if directory.is_dir():
-            paths.extend(path for path in directory.iterdir() if path.is_file())
+            try:
+                paths.extend(path for path in directory.iterdir() if path.is_file())
+            except OSError:
+                log.warning('Could not list migration directory %s', directory)
     for path in paths:
-        if path.is_file():
-            original = path.read_text()
-            cleaned = redact(original)
-            if original != cleaned:
-                atomic_write_text(path, cleaned)
+        try:
+            if path.is_file():
+                original = path.read_text(encoding='utf-8')
+                cleaned = redact(original)
+                if original != cleaned:
+                    atomic_write_text(path, cleaned)
+        except (OSError, UnicodeError):
+            log.warning('Could not scrub legacy file %s', path)
