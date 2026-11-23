@@ -34,6 +34,12 @@ def remember(value: str) -> str:
     return value
 
 
+def forget(digest: str) -> None:
+    for value in tuple(_known):
+        if hashlib.sha256(value.encode()).hexdigest() == digest:
+            _known.discard(value)
+
+
 def _redact_text(value: str, short_exact: bool = True) -> str:
     value = re.sub(r'(?:abr|abu|abs|abw)_[A-Za-z0-9_-]{43}', '[REDACTED]', value)
     for secret in sorted(_known, key=len, reverse=True):

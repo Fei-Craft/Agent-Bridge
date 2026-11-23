@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent_bridge import secrets
 from agent_bridge.secrets import redact
 from agent_bridge.worker_tokens import WorkerTokens
 
@@ -50,3 +51,23 @@ def test_worker_process_exit_revokes_token_permanently():
 def test_worker_token_pattern_is_redacted_without_registration():
     token = 'abw_' + 'w' * 43
     assert redact({token: 'echo ' + token}) == {'[REDACTED]': 'echo [REDACTED]'}
+
+
+def test_revoked_worker_tokens_are_forgotten_but_still_redacted():
+    tokens = WorkerTokens()
+    baseline = set(secrets._known)
+    first = tokens.issue('first')
+    other = tokens.issue('other')
+    replacement = tokens.issue('first')
+    assert first not in secrets._known
+    assert replacement in secrets._known and other in secrets._known
+    tokens.revoke('first')
+    assert replacement not in secrets._known and other in secrets._known
+    tokens.close()
+    assert secrets._known == baseline
+    assert redact([first, replacement, other]) == ['[REDACTED]'] * 3
+    for index in range(100):
+        tokens = WorkerTokens()
+        tokens.issue(str(index))
+        tokens.close()
+    assert secrets._known == baseline
