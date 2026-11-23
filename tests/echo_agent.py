@@ -108,11 +108,15 @@ class EchoAgent:
             ):
                 if config_id == "model":
                     self._model = str(value)
+                    if os.environ.get("BRIDGE_ECHO_COERCE_MODEL") == "1":
+                        self._model = "family"
                     self._effort = "low"
                 else:
                     if value == "high" and os.environ.get("BRIDGE_ECHO_REJECT_HIGH") == "1":
                         raise RequestError(-32602, "rejected thought level")
                     self._effort = str(value)
+                    if os.environ.get("BRIDGE_ECHO_COERCE_EFFORT") == "1":
+                        self._effort = "xhigh"
                 return SetSessionConfigOptionResponse(config_options=self._config_options() or [])
         raise RequestError(-32602, "unsupported config value")
 

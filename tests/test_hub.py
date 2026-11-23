@@ -190,6 +190,28 @@ async def test_generic_acp_selection_warns_when_not_advertised(hub, tmp_path):
     assert 'effort=max has no counterpart' in result['warnings'][1]
 
 
+async def test_generic_acp_reports_worker_confirmed_model_and_effort(hub, tmp_path):
+    client, registry = hub
+    registry.config.agents['echo'] = AgentConfig(
+        name='echo', protocol='acp',
+        command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
+        env={
+            'BRIDGE_ECHO_SELECTION': '1', 'BRIDGE_ECHO_COERCE_MODEL': '1',
+            'BRIDGE_ECHO_COERCE_EFFORT': '1',
+        },
+    )
+    result = (await client.post('/v1/agents/echo/invoke', json={
+        'message': 'hello', 'cwd': str(tmp_path), 'model': 'family-high', 'effort': 'high',
+    })).json()
+    assert result['status'] == 'completed'
+    assert (result['model'], result['observed_model']) == ('family-high', 'family')
+    assert (result['effort'], result['observed_effort']) == ('high', 'xhigh')
+    assert len(result['warnings']) == 2
+    assert "returned 'family'" in result['warnings'][0]
+    assert "returned 'xhigh'" in result['warnings'][1]
+    assert registry.sessions[result['session_id']].model == 'family'
+
+
 def test_hub_config(bridge_home):
     bridge_home.mkdir()
     (bridge_home / 'agents.toml').write_text('[hub]\nhost="localhost"\nport=9000\nmax_depth=2\n')

@@ -1032,7 +1032,7 @@ class AcpAdapter(Adapter):
         session: Session,
         config_id: str,
         value: str,
-    ) -> None:
+    ) -> str | None:
         assert live.conn is not None
         response = await self._rpc(
             live.conn.set_config_option(
@@ -1044,8 +1044,10 @@ class AcpAdapter(Adapter):
             session,
         )
         self._remember_config_options(live, response)
+        current, _ = config_option_values(getattr(response, "config_options", None), config_id)
+        return current
 
-    def _remember_applied_model(self, live: _Live, model: str) -> None:
+    def _remember_applied_model(self, live: _Live, model: str | None) -> None:
         """Record the live model and drop a stale per-model effort.
 
         OpenCode (and Kimi thinking) reset the variant when the model
@@ -1065,8 +1067,9 @@ class AcpAdapter(Adapter):
         not offer must fail the turn, not silently run on the default. The
         error names the real options.
         """
+        verify = model is not None
         model = model or session.model
-        if not model or model == live.applied_model:
+        if not model or (not verify and model == live.applied_model):
             return
         current_model, _ = config_option_values(live.config_options, "model")
         if model == current_model:
@@ -1075,7 +1078,7 @@ class AcpAdapter(Adapter):
             self._remember_applied_model(live, model)
             return
         try:
-            await self._set_config_option(live, session, "model", model)
+            confirmed = await self._set_config_option(live, session, "model", model)
         except AcpUnavailableError:
             raise
         except Exception as exc:
@@ -1084,7 +1087,18 @@ class AcpAdapter(Adapter):
                 f"{self.agent.name} rejected model {model!r}; "
                 f"session advertises {offered or 'no models'}"
             ) from exc
-        self._remember_applied_model(live, model)
+        if verify:
+            self._warn_config_mismatch(live, "model", model, confirmed)
+        self._remember_applied_model(live, confirmed if verify else model)
+
+    def _warn_config_mismatch(
+        self, live: _Live, option_id: str, requested: str, confirmed: str | None,
+    ) -> None:
+        if requested != confirmed:
+            outcome = f"returned {confirmed!r}" if confirmed is not None else "did not confirm a value"
+            live.pending_warnings.append(
+                f"{self.agent.name} requested {option_id}={requested!r}; worker {outcome}"
+            )
 
     async def _sync_cursor_selection(self, live: _Live, session: Session) -> None:
         if self.agent.name != "cursor" or live.conn is None or not session.native_session_id:
@@ -1549,7 +1563,10 @@ class AcpAdapter(Adapter):
                 ):
                     model, tier = family, suffix
                 await self._sync_model_option(live, session, model=model)
-                session.model = requested_model or session.model
+                if live.applied_model == model:
+                    session.model = requested_model or session.model
+                elif live.applied_model is not None:
+                    session.model = live.applied_model
         effort = session.effort or tier
         if not effort:
             return
@@ -1565,8 +1582,9 @@ class AcpAdapter(Adapter):
             if level is None:
                 continue
             try:
-                if level != current:
-                    await self._set_config_option(live, session, option_id, level)
+                confirmed = (
+                    current if level == current else await self._set_config_option(live, session, option_id, level)
+                )
             except AcpUnavailableError:
                 raise
             except Exception as exc:
@@ -1575,7 +1593,8 @@ class AcpAdapter(Adapter):
                     f"{_redact_diagnostic(str(exc))}"
                 )
             else:
-                live.applied_effort = level
+                self._warn_config_mismatch(live, option_id, level, confirmed)
+                live.applied_effort = confirmed
             return
         live.pending_warnings.append(
             f"{self.agent.name} effort={effort} has no counterpart; "
