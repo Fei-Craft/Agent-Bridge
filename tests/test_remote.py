@@ -289,15 +289,21 @@ async def test_shallow_caller_cannot_reset_saved_session_depth(gateway, tmp_path
     assert session.call_depth == 3
 
 
-async def test_shutdown_releases_pending_approvals(gateway):
+async def test_shutdown_releases_pending_approvals(gateway, monkeypatch):
     client, registry, _, _ = gateway
     registry.config.hub.remote.require_approval = True
+    ready = asyncio.Event()
+    original = registry.remote.approve
+
+    async def approve(*args):
+        ready.set()
+        await original(*args)
+
+    monkeypatch.setattr(registry.remote, 'approve', approve)
     pending = asyncio.create_task(client.post('/v1/tasks', json=payload()))
     try:
-        async def ready():
-            while not registry.remote.approvals:
-                await asyncio.sleep(0)
-        await asyncio.wait_for(ready(), 2)
+        await asyncio.wait_for(ready.wait(), 2)
+        assert registry.remote.approvals
         await registry.stop()
         response = await asyncio.wait_for(pending, 0.2)
         assert response.status_code == 403
