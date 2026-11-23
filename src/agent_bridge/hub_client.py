@@ -14,6 +14,7 @@ from agent_bridge.secrets import get, hub_key, remember
 
 # tool: (HTTP method, path, path argument)
 ROUTES = {
+    'create_ui_login': ('POST', '/v1/ui/login-code', None),
     'list_approvals': ('GET', '/v1/approvals', None),
     'approve_approval': ('POST', '/v1/approvals/{approval_id}/approve', 'approval_id'),
     'deny_approval': ('POST', '/v1/approvals/{approval_id}/deny', 'approval_id'),

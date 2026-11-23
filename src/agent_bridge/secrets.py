@@ -36,7 +36,7 @@ def remember(value: str) -> str:
 
 def redact(value: Any) -> Any:
     if isinstance(value, str):
-        value = re.sub(r'abr_[A-Za-z0-9_-]{43}', '[REDACTED]', value)
+        value = re.sub(r'(?:abr|abu|abs)_[A-Za-z0-9_-]{43}', '[REDACTED]', value)
         for secret in sorted(_known, key=len, reverse=True):
             for form in (secret, json.dumps(secret, ensure_ascii=False)[1:-1], json.dumps(secret)[1:-1]):
                 value = value.replace(form, '[REDACTED]')

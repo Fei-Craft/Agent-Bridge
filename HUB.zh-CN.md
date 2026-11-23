@@ -1,5 +1,20 @@
 # 中央 Hub
 
+## 本地仪表盘
+
+启动 Hub 后运行 `agent-bridge ui` 自动打开中文控制台，或用 `ui --no-open`
+打印登录链接。可查看代理、会话、最近 500 个内存任务、实时转录、分页结果、通知/回调状态，
+派发/取消任务，并查看网关白名单、最近 30 条脱敏审计和批准/拒绝待审批调用。
+任务每 3 秒刷新，支持系统浅深色模式与小屏布局。
+只有管理端回环监听器提供 `/ui`，远程网关始终 404。
+
+链接仅含 60 秒有效的一次性 code，不含管理 bearer token；页面立即清除 fragment，
+交换一小时有效的 HttpOnly、SameSite=Strict 会话 cookie。code/session 仅以哈希保存在内存，
+退出或重启失效；不用 localStorage、CDN 或前端构建。cookie API 仅限 UI 必需路由，
+要求自定义请求头及同源回环 Host/Origin；不能改偏好、结束会话、生成登录码或改网关配置。
+请保护打印的登录链接；独立 CLI 发现需可用的安全 keyring（或显式内存 worker 环境 token）。
+浏览器自身的历史/配置安全和同用户恶意程序不在 Hub 防护边界内。绝不隧道暴露管理端。
+
 先运行 `agent-bridge serve`，再打开协调器。现有 stdio MCP 配置会自动代理到
 同一个 HTTP Hub；所有本地 agent 共享一个 Registry。没有 Hub 时保持原来的本地模式。
 

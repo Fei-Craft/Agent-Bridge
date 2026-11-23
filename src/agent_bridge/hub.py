@@ -20,6 +20,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from agent_bridge.api import BridgeService, _error, wait_for_result
+from agent_bridge.dashboard import Dashboard, DashboardHeaders
 from agent_bridge.hub_client import ROUTES
 from agent_bridge.paths import ensure_home
 from agent_bridge.registry import Registry
@@ -62,6 +63,7 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
             return result
 
     service = HubService(registry)
+    dashboard = Dashboard(registry, url)
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
@@ -84,11 +86,13 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
 
     def endpoint(tool: str):
         async def handle(request: Request):
-            if not secrets.compare_digest(request.headers.get('authorization', ''), f'Bearer {secret}'):
+            if not secrets.compare_digest(request.headers.get('authorization', ''), f'Bearer {secret}') and not dashboard.authorized(request, tool):
                 return JSONResponse(_error(PermissionError('invalid bearer token')), status_code=401)
             if tool == 'health':
                 return JSONResponse({'ok': True})
             try:
+                if tool == 'create_ui_login':
+                    return JSONResponse(dashboard.issue(request))
                 args: dict[str, Any] = dict(request.query_params)
                 if request.method in ('POST', 'PUT'):
                     body = await request.body()
@@ -162,14 +166,19 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                     caller_session_context.reset(caller_context)
                 if tool == 'list_agents':
                     result.update(backend='hub', hub_url=url)
+                    for agent in result.get('agents', []):
+                        agent['protocol'] = registry.config.get(agent['agent']).protocol
             except Exception as exc:
                 result = _error(exc)
             return JSONResponse(result, status_code=200 if result['ok'] else 400)
         return handle
 
     routes = [Route('/v1/health', endpoint('health'))]
+    routes.extend(dashboard.routes())
     routes.extend(Route(path, endpoint(tool), methods=[method]) for tool, (method, path, _) in ROUTES.items())
-    app = Starlette(routes=routes, lifespan=lifespan)
+    app = Starlette(routes=routes, lifespan=lifespan, middleware=[])
+    app.add_middleware(DashboardHeaders)
+    app.state.dashboard = dashboard
     app.state.token = secret
     app.state.registry = registry
     return app
