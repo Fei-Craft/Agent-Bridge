@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import types
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -15,6 +16,8 @@ from agent_bridge.adapters.acp import AcpAdapter
 from agent_bridge.config import AgentConfig, EnvConfig, load_config
 from agent_bridge.hub import create_app, validate_host
 from agent_bridge.hub_client import HubClient, discover
+from agent_bridge.models import Session, TurnResult
+from agent_bridge.native_search import observe_codex_search
 from agent_bridge.registry import Registry
 from agent_bridge.worker_env import build_worker_env, enforce_env_deny, hub_worker_context
 
@@ -75,6 +78,54 @@ async def test_depth_and_self_dispatch(hub, tmp_path):
     assert too_deep.status_code == 400
     assert 'max_depth' in too_deep.json()['error']
     assert (await client.post('/v1/tasks', json=body, headers={'X-Agent-Bridge-Caller': 'unknown'})).status_code == 400
+
+
+async def test_native_search_auth_depth_and_mcp_proxy(hub, tmp_path, monkeypatch):
+    client, registry = hub
+    registry.config.agents["codex"] = AgentConfig(name="codex", protocol="codex", command=["unused"])
+
+    async def turn(self, session, task):
+        observe_codex_search(task, {
+            "id": "web", "action": {"type": "search"},
+            "results": [{"type": "text_result", "url": "https://example.org/"}],
+        })
+        return TurnResult(text="Native result", native_session_id="native-thread")
+
+    monkeypatch.setattr("agent_bridge.adapters.codex.CodexAdapter.run_turn", turn)
+    body = dict(agent="codex", capability="search", prompt="Search", cwd=str(tmp_path),
+                request_id=str(uuid.uuid4()), user_requested=True)
+    assert (await client.post("/v1/capabilities", json=body, headers={"Authorization": ""})).status_code == 401
+    assert (await client.post("/v1/capabilities", json=body, headers={
+        "X-Agent-Bridge-Caller": "unknown",
+    })).json()["error"].endswith("unknown caller session")
+    assert not (await client.post("/v1/capabilities", json=body | {"user_requested": "false"})).json()["ok"]
+    assert not (await client.post("/v1/capabilities", json=body | {"capability": "image"})).json()["ok"]
+    assert not (await client.post("/v1/capabilities", json=body | {"agent": "opencode"})).json()["ok"]
+    root = Session(session_id="test-root", agent="fake", cwd=str(tmp_path))
+    peer = Session(session_id="test-peer", agent="fake", cwd=str(tmp_path), call_depth=1)
+    registry.sessions.update({root.session_id: root, peer.session_id: peer})
+    response = await client.post("/v1/capabilities", json=body, headers={"X-Agent-Bridge-Caller": peer.session_id})
+    assert response.status_code == 400 and "max_depth" in response.json()["error"]
+    assert not registry.tasks
+
+    original_client = httpx2.AsyncClient
+    monkeypatch.setattr(httpx2, "AsyncClient", lambda **kwargs: original_client(transport=client._transport, **kwargs))
+    monkeypatch.setenv("AGENT_BRIDGE_CALLER_SESSION", root.session_id)
+    backend = HubClient("http://hub", "test-token")
+    ctx = types.SimpleNamespace(request_context=types.SimpleNamespace(lifespan_context=backend))
+    call = await server.call_capability(ctx, **body)
+    result = await server.get_capability_result(ctx, call["call_id"], wait_sec=5, max_chars=6)
+    assert result["ok"] and not result["pending"] and result["status"] == "completed"
+    assert result["sources"][0]["url"] == "https://example.org/"
+    assert result["result_text"] == "Native" and result["has_more"]
+    task = registry.tasks[call["call_id"]]
+    assert task.call_depth == 1 and task.caller_session_id == root.session_id
+    assert "session_id" not in call and "session_id" not in result
+    path = f"/v1/capabilities/{task.task_id}"
+    assert (await client.get(path + "/result", headers={"Authorization": ""})).status_code == 401
+    assert (await client.post(path + "/cancel", headers={"Authorization": ""})).status_code == 401
+    assert (await server.cancel_capability(ctx, task.task_id))["remote_cancellation_supported"] is False
+    assert (await server.call_capability(ctx, **body))["reused"]
 
 
 async def test_lifecycle_cleanup(bridge_home):

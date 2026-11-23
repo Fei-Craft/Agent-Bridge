@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -41,6 +42,7 @@ from agent_bridge.models import (
     iso,
     normalize_effort,
 )
+from agent_bridge.native_search import SEARCH_PROTOCOLS, SEARCH_TOOLS
 from agent_bridge.paths import ensure_home, result_path, state_path, transcript_path
 from agent_bridge.persist import (
     atomic_write_json,
@@ -506,6 +508,10 @@ class Registry:
                 task.status = TaskStatus.failed
                 task.error = "bridge_restarted"
                 task.finished_at = iso()
+            if task.native_search and not task.search_finalized and task.status == TaskStatus.completed:
+                task.status = TaskStatus.failed
+                task.stop_reason = "error"
+                task.error = "Bridge restarted before search worker cleanup was confirmed."
             if task.files_changed_state == FilesChangedState.pending and task.status in TERMINAL_STATUSES:
                 task.files_changed_state = (
                     FilesChangedState.collected
@@ -727,12 +733,16 @@ class Registry:
         callback_url: str | None = None,
         callback_secret: str | None = None,
         notification_source_task_id: str | None = None,
+        _native_search: bool = False,
+        _previous_call_id: str | None = None,
     ) -> dict:
         if not self.dispatch_enabled:
             raise RuntimeError(NESTED_DISPATCH_ERROR)
         caller_task = self._busy_task(caller_session_id) if caller_session_id else None
         if caller_session_id and caller_session_id not in self.sessions:
             raise ValueError('unknown caller session')
+        if caller_session_id and self.sessions[caller_session_id].native_search:
+            raise ValueError("native search workers cannot dispatch to other workers")
         if caller_session_id and session_id == caller_session_id:
             raise ValueError('cannot dispatch into caller session')
         depth = self.sessions[caller_session_id].call_depth + 1 if caller_session_id else 0
@@ -757,6 +767,8 @@ class Registry:
             except ValueError:
                 raise ValueError("request_id must be a UUID") from None
         agent_cfg = self.config.get(agent)
+        if _native_search and SEARCH_PROTOCOLS.get(agent) != agent_cfg.protocol:
+            raise ValueError(f"{agent} does not have a supported native search integration for {agent_cfg.protocol}")
         cloud = agent_cfg.protocol == 'cloud'
         if not cloud and not cwd:
             raise ValueError('cwd is required for local agents')
@@ -776,6 +788,8 @@ class Registry:
         if cloud:
             request += (repo, ref)
         request += (notify_caller, caller_session_id, callback_url, callback_secret)
+        if _native_search:
+            request += ("native_search", _previous_call_id)
         async with self._lock:
             if request_id is not None and request_id in self._requests:
                 previous_fp, task_id = self._requests[request_id]
@@ -792,10 +806,26 @@ class Registry:
                     "reused": True,
                     "persisted": await self.flush_state(),
                 }
+            if _previous_call_id is not None:
+                previous = self.tasks.get(_previous_call_id)
+                if (
+                    previous is None or not previous.native_search or previous.status != TaskStatus.completed
+                    or not previous.search_finalized or previous.agent != agent or previous.cwd != resolved_cwd
+                ):
+                    raise ValueError("previous_call_id must identify a finalized successful search for the same agent and cwd")
+                session_id = previous.session_id
+                prior_session = self.sessions.get(session_id)
+                if prior_session is None or not prior_session.native_session_id:
+                    raise ValueError("previous search has no resumable native session")
+                latest = next(t for t in reversed(self.tasks.values()) if t.session_id == session_id)
+                if latest is not previous:
+                    raise ValueError("previous_call_id must identify the latest search in its session")
             if session_id:
                 session = self.sessions.get(session_id)
                 if session is None:
                     raise KeyError(f"unknown session {session_id}")
+                if session.native_search != _native_search:
+                    raise ValueError("native search sessions are not available to ordinary dispatch")
                 if session.agent != agent:
                     raise ValueError(f"session {session_id} belongs to agent {session.agent}, not {agent}")
                 if cloud and repo is not None and repo != session.repo:
@@ -816,6 +846,7 @@ class Registry:
                     )
             else:
                 session = Session(
+                    native_search=_native_search,
                     call_depth=depth,
                     session_id=_new_id("sess"),
                     agent=agent,
@@ -841,6 +872,9 @@ class Registry:
             if caller_session_id:
                 session.call_depth = depth
             task = Task(
+                native_search=_native_search,
+                request_id=request_id if _native_search else None,
+                previous_call_id=_previous_call_id,
                 call_depth=session.call_depth,
                 task_id=_new_id("task"),
                 session_id=session.session_id,
@@ -884,13 +918,22 @@ class Registry:
                 session.session_id,
                 agent,
             )
-            try:
-                persisted = await self.flush_state()
-            finally:
-                # Even when the caller cancels mid-flush, the registered task
-                # must still start — a request_id retry would otherwise reuse
-                # a row that never runs.
-                self._bg[task.task_id] = asyncio.create_task(self._run_task(task.task_id), name=f"task-{task.task_id}")
+            if _native_search:
+                initial_flush = asyncio.create_task(self.flush_state())
+                try:
+                    persisted = await asyncio.shield(initial_flush)
+                finally:
+                    self._bg[task.task_id] = asyncio.create_task(
+                        self._run_persisted_search(task, initial_flush), name=f"task-{task.task_id}",
+                    )
+            else:
+                try:
+                    persisted = await self.flush_state()
+                finally:
+                    # Even when the caller cancels mid-flush, the registered task
+                    # must still start — a request_id retry would otherwise reuse
+                    # a row that never runs.
+                    self._bg[task.task_id] = asyncio.create_task(self._run_task(task.task_id), name=f"task-{task.task_id}")
         return {
             "task_id": task.task_id,
             "session_id": session.session_id,
@@ -900,6 +943,54 @@ class Registry:
             "persisted": persisted,
             **({"request_id": request_id, "reused": False} if request_id is not None else {}),
         }
+
+    async def _run_persisted_search(self, task: Task, initial_flush: asyncio.Task[bool]) -> None:
+        try:
+            persisted = await asyncio.shield(initial_flush)
+        except asyncio.CancelledError:
+            self._finish_unstarted_search(task, TaskStatus.cancelled)
+            return
+        if not persisted:
+            task.error = "Native search was not submitted: could not persist the request."
+            self._finish_unstarted_search(task, TaskStatus.failed)
+            return
+        await self._run_task(task.task_id)
+
+    def _finish_unstarted_search(self, task: Task, status: TaskStatus) -> None:
+        task.status = status
+        task.stop_reason = "cancelled" if status == TaskStatus.cancelled else "error"
+        task.finished_at = iso()
+        task.files_changed_state = FilesChangedState.unavailable
+        task.search_finalized = True
+        self.sessions[task.session_id].proc_state = ProcState.idle_unloaded
+        self._cancel_requested.discard(task.task_id)
+        self._bg.pop(task.task_id, None)
+        self._done[task.task_id].set()
+        self.save()
+
+    async def _finalize_search(self, task: Task, session: Session, adapter: Adapter) -> None:
+        if task.status == TaskStatus.completed and (
+            "web_search" not in task.native_calls.values() or not set(task.native_calls.values()) <= SEARCH_TOOLS
+            or not task.sources or any(s.tool_call_id not in task.native_calls for s in task.sources)
+        ):
+            task.status = TaskStatus.failed
+            task.stop_reason = "error"
+            task.error = "Search requires completed native web_search evidence and attributable sources."
+        try:
+            await adapter.shutdown(session)
+        except Exception:
+            log.exception("native search worker shutdown failed for %s", task.task_id)
+            task.warnings.append("Native search worker shutdown could not be confirmed; continuation is blocked.")
+            if task.status == TaskStatus.completed:
+                task.status = TaskStatus.failed
+                task.stop_reason = "error"
+                task.error = task.warnings[-1]
+            return
+        self._adapters.pop(session.session_id, None)
+        forget_worker_activity(session.session_id, self.home)
+        session.proc_state = ProcState.idle_unloaded
+        session.pid = None
+        task.search_finalized = True
 
     async def _run_task(self, task_id: str) -> None:
         started_monotonic = time.monotonic()
@@ -935,6 +1026,8 @@ class Registry:
                 _, instructions = self.remote.issue(task)
                 turn_task = task.model_copy(update={'message': task.message + instructions})
             result = await adapter.run_turn(session, turn_task)
+            if task.native_search:
+                result.text = redact(result.text)
             task.remote.update(result.remote)
             if result.native_session_id:
                 session.native_session_id = result.native_session_id
@@ -1053,7 +1146,14 @@ class Registry:
                 flush_session(session.session_id, self.home)
             except OSError:
                 log.exception("could not flush transcript for task %s", task.task_id)
-            self._done[task_id].set()
+            if task.native_search:
+                cleanup = asyncio.create_task(self._finalize_search(task, session, adapter))
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    await cleanup
+            if not task.native_search or task.search_finalized:
+                self._done[task_id].set()
             self._bg.pop(task_id, None)
             self.save()
             duration_ms = int((time.monotonic() - started_monotonic) * 1000)
@@ -1069,7 +1169,8 @@ class Registry:
                 task.stop_reason,
                 (task.error or "")[:500],
             )
-            self._schedule_idle(session.session_id)
+            if not task.native_search:
+                self._schedule_idle(session.session_id)
 
     @staticmethod
     def _set_files_changed(task: Task, paths: list[str], outside: list[str] | None = None) -> None:
@@ -1203,7 +1304,10 @@ class Registry:
                 log.info("removed orphan result %s (no task row)", orphan.name)
 
     def _drop_task(self, task_id: str) -> None:
-        if task_id in self.tasks and pending(self.tasks[task_id]):
+        if task_id in self.tasks and (
+            pending(self.tasks[task_id])
+            or (self.tasks[task_id].native_search and not self._done[task_id].is_set())
+        ):
             return
         self.tasks.pop(task_id, None)
         self.deliveries.delete_secret(task_id)
@@ -1516,6 +1620,35 @@ class Registry:
         task = self._require_task(task_id, allow_disk=True)
         return await self._with_persisted(task, self._task_snapshot(task))
 
+    def require_search(self, call_id: str, *, allow_disk: bool = False) -> Task:
+        task = self._require_task(call_id, allow_disk=allow_disk)
+        if not task.native_search:
+            raise KeyError(f"unknown capability call {call_id}")
+        return task
+
+    async def get_search_result(self, call_id: str, wait_sec: float, cursor: int, max_chars: int) -> dict:
+        if not math.isfinite(wait_sec) or not 0 <= wait_sec <= 60:
+            raise ValueError("wait_sec must be between 0 and 60")
+        task = self.require_search(call_id, allow_disk=True)
+        done = self._done.get(call_id)
+        if done is not None and not done.is_set() and wait_sec:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(done.wait(), timeout=wait_sec)
+        result = await self.get_result(call_id, cursor=cursor, max_chars=max_chars)
+        fields = (
+            "status", "stop_reason", "error", "failure", "persisted", "warnings",
+            "model", "effort", "observed_model", "observed_effort", "created_at",
+            "started_at", "finished_at", "elapsed_sec", "usage", "result_text",
+            "result_offset", "result_total_chars", "next_cursor", "has_more", "result_complete",
+        )
+        return redact({
+            **{key: result[key] for key in fields if key in result},
+            "call_id": call_id, "agent": task.agent, "capability": "search", "request_id": task.request_id,
+            "cwd": task.cwd, "sources": [source.model_dump(exclude_none=True) for source in task.sources],
+            "native_calls": task.native_calls,
+            "pending": (not done.is_set() if done is not None else not task.search_finalized),
+        })
+
     async def get_result(
         self,
         task_id: str,
@@ -1561,6 +1694,9 @@ class Registry:
         return await self._with_persisted(task, payload)
 
     def get_transcript(self, session_id: str, offset: int = 0, limit: int = 50, kinds: list[str] | None = None) -> dict:
+        session = self.sessions.get(session_id)
+        if session is not None and session.native_search:
+            raise KeyError(f"unknown session {session_id}")
         if session_id not in self.sessions and not transcript_path(session_id, self.home).is_file():
             raise KeyError(f"unknown session {session_id}")
         events = read_events(session_id, self.home)
@@ -1576,7 +1712,12 @@ class Registry:
         session = self.sessions[task.session_id]
         adapter = self._adapters.get(session.session_id)
         if adapter is not None:
-            await adapter.cancel(session)
+            try:
+                await adapter.cancel(session)
+            except Exception:
+                if not task.native_search:
+                    raise
+                log.exception("cancel signal failed for native search %s", task_id)
         bg = self._bg.get(task_id)
         if bg is not None:
             bg.cancel()
@@ -1585,6 +1726,10 @@ class Registry:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._done[task_id].wait(), timeout=15)
         if not self._done[task_id].is_set():
+            if task.native_search:
+                if task.started_at is None and bg is not None and bg.cancelled():
+                    self._finish_unstarted_search(task, TaskStatus.cancelled)
+                return await self._with_persisted(task, self._task_snapshot(task))
             # _run_task never ran (cancelled before its first step) or did not
             # finish in time; close the record here.
             task.status = TaskStatus.cancelled
@@ -1602,6 +1747,8 @@ class Registry:
     def list_sessions(self, active_only: bool = False) -> list[dict]:
         rows = []
         for session in self.sessions.values():
+            if session.native_search:
+                continue
             if active_only and session.proc_state in {ProcState.dead, ProcState.idle_unloaded}:
                 continue
             rows.append(
@@ -1633,7 +1780,7 @@ class Registry:
         if not self.dispatch_enabled:
             raise RuntimeError(NESTED_END_SESSION_ERROR)
         session = self.sessions.get(session_id)
-        if session is None:
+        if session is None or session.native_search:
             raise KeyError(f"unknown session {session_id}")
         busy = self._busy_task(session_id)
         if busy is not None:

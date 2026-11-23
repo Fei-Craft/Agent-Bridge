@@ -98,21 +98,24 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                 for key in ('cursor', 'max_chars', 'offset', 'limit'):
                     if key in args:
                         args[key] = int(args[key])
-                if 'timeout_sec' in args:
-                    args['timeout_sec'] = float(args['timeout_sec'])
+                for key in ('timeout_sec', 'wait_sec'):
+                    if key in args:
+                        args[key] = float(args[key])
                 if 'active_only' in args:
                     if args['active_only'] not in ('true', 'false'):
                         raise ValueError('active_only must be true or false')
                     args['active_only'] = args['active_only'] == 'true'
                 caller = request.headers.get('x-agent-bridge-caller')
                 depth = 0
-                if caller and tool in ('dispatch_task', 'invoke'):
-                    if caller not in registry.sessions:
-                        raise ValueError('unknown caller session')
+                if caller and caller not in registry.sessions and tool in (
+                    'dispatch_task', 'invoke', 'call_capability', 'get_capability_result', 'cancel_capability',
+                ):
+                    raise ValueError('unknown caller session')
+                if caller and tool in ('dispatch_task', 'invoke', 'call_capability'):
                     if args.get('session_id') == caller:
                         raise ValueError('cannot dispatch into caller session')
                     caller_task = registry._busy_task(caller)
-                    if caller_task and caller_task.notification_source_task_id:
+                    if tool != 'call_capability' and caller_task and caller_task.notification_source_task_id:
                         args['notify_caller'] = False
                         args.pop('callback_url', None)
                         args.pop('callback_secret', None)

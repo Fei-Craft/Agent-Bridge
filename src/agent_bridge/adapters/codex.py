@@ -21,6 +21,7 @@ from agent_bridge.codex_exec import (
 )
 from agent_bridge.diagnostics import redact_diagnostic
 from agent_bridge.models import Session, Task, TurnResult
+from agent_bridge.native_search import HUB_PEER_ENV_KEYS, observe_codex_search
 from agent_bridge.processes import (
     drop_pid,
     interrupt_then_reap,
@@ -62,7 +63,10 @@ class CodexAdapter(Adapter):
             effort=task.effort or session.effort,
             resume_id=session.native_session_id,
             yolo=yolo_requested(self.agent.session_meta),
-            config_overrides=self.agent.config_overrides,
+            config_overrides=[
+                *self.agent.config_overrides,
+                *(['web_search="live"'] if task.native_search else []),
+            ],
         )
 
     async def _drain_stderr(self, proc: asyncio.subprocess.Process, session_id: str) -> str:
@@ -104,9 +108,14 @@ class CodexAdapter(Adapter):
                 proc.stdin.close()
 
     async def run_turn(self, session: Session, task: Task) -> TurnResult:
+        if task.previous_call_id and not session.native_session_id:
+            raise RuntimeError("native session is missing and cannot be resumed")
         env = self._worker_env()
         cmd = self._build_cmd(session, task, env)
         env = self._enforce_spawn_env(env)
+        if task.native_search:
+            for key in HUB_PEER_ENV_KEYS:
+                env.pop(key, None)
         kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -170,6 +179,15 @@ class CodexAdapter(Adapter):
                 apply_codex_event(state, obj)
                 event = str(obj.get("type") or "")
                 event_type = "raw"
+                search_item = obj.get("item")
+                if (task.native_search and event in {"item.started", "item.updated", "item.completed"}
+                        and isinstance(search_item, dict) and search_item.get("type") == "web_search"):
+                    if event == "item.completed":
+                        observe_codex_search(task, search_item)
+                    append_event(session.session_id, "tool_call", {
+                        "native_search": True, "source_count": len(task.sources),
+                    }, self.home)
+                    continue
                 if event == "item.completed":
                     raw_item = obj.get("item")
                     item: dict[str, Any] = raw_item if isinstance(raw_item, dict) else {}
@@ -256,9 +274,10 @@ class CodexAdapter(Adapter):
                 stderr_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await stderr_task
-            self._procs.pop(session.session_id, None)
+            if not task.native_search or proc.returncode is not None:
+                self._procs.pop(session.session_id, None)
+                drop_pid(self.home, session.session_id)
             self._cancelled.discard(session.session_id)
-            drop_pid(self.home, session.session_id)
 
     async def cancel(self, session: Session) -> None:
         self._cancelled.add(session.session_id)
@@ -268,4 +287,9 @@ class CodexAdapter(Adapter):
 
     async def shutdown(self, session: Session) -> None:
         await self.cancel(session)
+        proc = self._procs.get(session.session_id)
+        if session.native_search and proc is not None:
+            if proc.returncode is None:
+                raise RuntimeError("native search worker is still running")
+            drop_pid(self.home, session.session_id)
         self._procs.pop(session.session_id, None)

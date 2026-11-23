@@ -32,6 +32,58 @@ class BridgeService:
     def __init__(self, registry: Registry) -> None:
         self.registry = registry
 
+    async def call_capability(
+        self, agent: str, capability: str, prompt: str, cwd: str, request_id: str,
+        model: str | None = None, effort: str | None = None, user_requested: bool = False,
+        previous_call_id: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            if capability != "search":
+                raise ValueError("only the search capability is supported")
+            if not isinstance(request_id, str) or not request_id:
+                raise ValueError("request_id is required on the first capability call")
+            if not isinstance(user_requested, bool):
+                raise ValueError("user_requested must be a boolean")
+            if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
+                raise ValueError("prompt must contain between 1 and 16000 characters")
+            if previous_call_id is not None and (not isinstance(previous_call_id, str) or not previous_call_id.strip()):
+                raise ValueError("previous_call_id must be a capability call id")
+            message = (
+                "Perform a native web search and use native page retrieval when needed to verify the findings. "
+                "Return findings and native sources. Do not generate media, delegate, edit project source, "
+                "or use shell/network scripts as a substitute. If native search is unavailable or uncertain, "
+                "report the condition and stop.\nRequest:\n" + prompt
+            )
+            result = await self.registry.dispatch_task(
+                agent=agent, message=message, cwd=cwd, request_id=request_id, model=model, effort=effort,
+                user_requested=user_requested, caller_session_id=caller_session_context.get(),
+                _native_search=True, _previous_call_id=previous_call_id,
+            )
+            task = self.registry.require_search(result["task_id"])
+            return {
+                "ok": True, "call_id": task.task_id, "agent": task.agent, "capability": capability,
+                "status": task.status.value, "request_id": task.request_id,
+                "persisted": result["persisted"], "reused": result.get("reused", False),
+            }
+        except Exception as exc:
+            return _error(exc)
+
+    async def get_capability_result(
+        self, call_id: str, wait_sec: float = 0, cursor: int = 0, max_chars: int = RESULT_PAGE_MAX_CHARS,
+    ) -> dict[str, Any]:
+        try:
+            return {"ok": True, **await self.registry.get_search_result(call_id, wait_sec, cursor, max_chars)}
+        except Exception as exc:
+            return _error(exc)
+
+    async def cancel_capability(self, call_id: str) -> dict[str, Any]:
+        try:
+            task = self.registry.require_search(call_id)
+            await self.registry.cancel_task(task.task_id)
+            return await self.get_capability_result(task.task_id) | {"remote_cancellation_supported": False}
+        except Exception as exc:
+            return _error(exc)
+
     async def invoke(self, agent: str, message: str, cwd: str | None = None, timeout_sec: float | None = None, **kwargs: Any) -> dict[str, Any]:
         if timeout_sec is not None and timeout_sec < 0:
             return _error(ValueError('timeout_sec must be non-negative'))

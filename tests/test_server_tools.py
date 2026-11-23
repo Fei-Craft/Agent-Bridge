@@ -5,9 +5,11 @@ import os
 import sys
 import time
 import types
+import uuid
 
 import pytest
 
+from agent_bridge import server
 from agent_bridge.processes import reap_subprocess
 from agent_bridge.registry import Registry
 from agent_bridge.server import INSTRUCTIONS, _error, _registry, list_sessions, mcp
@@ -16,10 +18,13 @@ from agent_bridge.server import INSTRUCTIONS, _error, _registry, list_sessions, 
 def test_tools_registered():
     names = sorted(mcp._tool_manager._tools)
     assert names == [
+        "call_capability",
+        "cancel_capability",
         "cancel_task",
         "check_task",
         "dispatch_task",
         "end_session",
+        "get_capability_result",
         "get_result",
         "get_transcript",
         "invoke_agent",
@@ -28,6 +33,20 @@ def test_tools_registered():
         "set_preferences",
         "wait_task",
     ]
+
+
+async def test_native_search_mcp_local_fallback(bridge_home, tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_BRIDGE_HUB", "off")
+    async with server.lifespan(mcp) as backend:
+        assert isinstance(backend, Registry)
+        backend.config.coordinator.mode = "manual"
+        ctx = types.SimpleNamespace(request_context=types.SimpleNamespace(lifespan_context=backend))
+        call = await server.call_capability(ctx, "codex", "search", "Find sources", str(tmp_path), str(uuid.uuid4()))
+        assert not call["ok"]
+        assert "manual" in call["error"]
+        assert not backend.tasks
+        assert not (await server.get_capability_result(ctx, "missing"))["ok"]
+        assert not (await server.cancel_capability(ctx, "missing"))["ok"]
 
 
 def test_handshake_instructions_carry_hard_rules():
