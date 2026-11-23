@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import warnings
 from pathlib import Path
 
@@ -68,6 +69,9 @@ async def test_full_flow_no_plaintext_and_discovery(bridge_home, tmp_path, monke
         await registry.flush_state()
         for path in bridge_home.rglob('*'):
             if path.is_file():
+                if os.name == 'nt' and path.name == 'hub.lock':
+                    assert path.stat().st_size == 1
+                    continue
                 content = path.read_bytes()
                 assert all(value.encode() not in content for value in (token, callback, key)), path
         assert not (bridge_home / 'callback-secrets').exists()

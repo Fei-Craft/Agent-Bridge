@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
 
@@ -58,6 +59,9 @@ async def test_login_single_use_hashed_cookie_logout(dashboard):
     assert (await client.get('/ui/data', headers=UI)).json()['tasks'] == []
     for path in registry.home.rglob('*'):
         if path.is_file():
+            if os.name == 'nt' and path.name == 'hub.lock':
+                assert path.stat().st_size == 1
+                continue
             assert raw.encode() not in path.read_bytes()
             assert code.encode() not in path.read_bytes()
     response = await client.post('/ui/logout', headers=UI, json={})

@@ -37,7 +37,8 @@ async def test_routes(hub, bridge_home, tmp_path):
     info = json.loads((bridge_home / 'hub.json').read_text())
     assert info['pid'] == os.getpid()
     assert 'token' not in info
-    assert (bridge_home / 'hub.json').stat().st_mode & 0o777 == 0o600
+    if os.name != 'nt':
+        assert (bridge_home / 'hub.json').stat().st_mode & 0o777 == 0o600
     assert registry.runtime_context == 'coordinator'
     assert registry.config.server.idle_exit_sec == 0
     assert (await client.get('/v1/health')).json() == {'ok': True}
