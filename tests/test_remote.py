@@ -19,7 +19,7 @@ from starlette.requests import Request
 from agent_bridge import cli
 from agent_bridge.adapters.fake import FakeAdapter
 from agent_bridge.baselines import Baseline
-from agent_bridge.config import AgentConfig, HubConfig, RemoteConfig, load_config
+from agent_bridge.config import AgentConfig, AppConfig, HubConfig, RemoteConfig, load_config
 from agent_bridge.desktop_ipc import DesktopIPC
 from agent_bridge.hub import create_app
 from agent_bridge.models import ProcState, Session, Task, TaskStatus
@@ -33,6 +33,7 @@ from agent_bridge.worker_env import build_worker_env
 async def gateway(bridge_home, tmp_path):
     config = load_config(bridge_home)
     config.hub.remote = RemoteConfig(enabled=True, public_url='http://127.0.0.1:8766',
+        require_approval=False,
         remote_callable_agents=['fake', 'cloud', 'dsh'], remote_workspaces={'project': str(tmp_path)})
     config.agents['cloud'] = AgentConfig(name='cloud', protocol='cloud', cloud={'provider': 'devin', 'org_id': 'org'})
     registry = Registry.create(bridge_home, config)
@@ -72,6 +73,79 @@ async def test_remote_dsh_starts_without_local_default_baseline(gateway, monkeyp
     assert result.status_code == 400
 
 
+@pytest.mark.parametrize('turn_timeout', [0, 30, 86400])
+async def test_remote_token_default_ttl_independent_of_turn_timeout(gateway, turn_timeout):
+    _, registry, _, _ = gateway
+    assert RemoteConfig().token_ttl_sec == 3600
+    registry.config.get('cloud').turn_timeout_sec = turn_timeout
+    before = time.time()
+    scope, _ = registry.remote.issue(registry.tasks['task_origin'])
+    assert before + 3600 <= scope.expires <= time.time() + 3600
+
+
+async def test_remote_token_explicit_ttl(gateway):
+    _, registry, _, _ = gateway
+    registry.remote.config.token_ttl_sec = 90
+    before = time.time()
+    scope, _ = registry.remote.issue(registry.tasks['task_origin'])
+    assert before + 90 <= scope.expires <= time.time() + 90
+
+
+@pytest.mark.parametrize('ttl', [None, 0, -1])
+def test_remote_token_ttl_must_be_positive(ttl):
+    with pytest.raises(ValidationError):
+        RemoteConfig(token_ttl_sec=ttl)
+
+
+@pytest.mark.parametrize('flag', ['--dangerously-skip-permissions', '--auto', '--yolo',
+    '--full-auto', '--dangerously-bypass-approvals-and-sandbox', '--force', '--auto=true'])
+@pytest.mark.parametrize('location', ['command', 'fallback_commands', 'cli'])
+def test_remote_unsafe_permissions_require_explicit_opt_in(flag, location, caplog):
+    spec = {'name': 'unsafe', 'protocol': 'cli', 'command': ['worker']}
+    spec[location] = {'extra_args': [flag]} if location == 'cli' else ([['worker', flag]] if location == 'fallback_commands' else ['worker', flag])
+    agent = AgentConfig.model_validate(spec)
+    remote = HubConfig(remote={'enabled': True, 'remote_callable_agents': ['unsafe']})
+    with pytest.raises(ValueError, match='remote_allow_unsafe_permissions'):
+        AppConfig(agents={'unsafe': agent}, hub=remote)
+    agent.remote_allow_unsafe_permissions = True
+    AppConfig(agents={'unsafe': agent}, hub=remote)
+    assert 'unsafe explicitly allows unsafe permissions' in caplog.text
+
+
+def test_remote_defaults_and_preset_validation(bridge_home):
+    assert RemoteConfig().require_approval is True
+    config = load_config(bridge_home)
+    config.hub.remote = RemoteConfig(enabled=True)
+    config.validate_remote_agents()
+    for name in ('opencode', 'claude'):
+        config.hub.remote.remote_callable_agents = [name]
+        with pytest.raises(ValueError, match='skips permissions'):
+            config.validate_remote_agents()
+    bridge_home.mkdir(exist_ok=True)
+    (bridge_home / 'agents.toml').write_text('[hub.remote]\nenabled=true\nremote_callable_agents=["claude"]\n', encoding='utf-8')
+    with pytest.raises(ValueError, match='skips permissions'):
+        load_config(bridge_home)
+
+
+async def test_remote_approval_is_required_by_default(gateway):
+    client, registry, _, _ = gateway
+    registry.remote.config = RemoteConfig(enabled=True)
+    pending = asyncio.create_task(client.post('/v1/tasks', json=payload()))
+    try:
+        for _ in range(100):
+            if registry.remote.approvals:
+                break
+            await asyncio.sleep(0.01)
+        assert registry.remote.approvals and not pending.done()
+        assert not any(session.remote_origin for session in registry.sessions.values())
+        approval_id = next(iter(registry.remote.approvals))
+        registry.remote.decide(approval_id, False)
+        assert (await pending).status_code == 403
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
 async def test_remote_workers_never_receive_admin_credentials(gateway, monkeypatch):
     client, registry, _, _ = gateway
     registry.deliveries.worker_context = {'AGENT_BRIDGE_HUB_URL': 'http://admin', 'AGENT_BRIDGE_HUB_TOKEN': 'unrestricted-admin'}
@@ -90,6 +164,33 @@ async def test_remote_workers_never_receive_admin_credentials(gateway, monkeypat
     assert 'AGENT_BRIDGE_HUB_TOKEN' not in captured[0]
     assert 'AGENT_BRIDGE_HUB_URL' not in captured[0]
     assert captured[0]['AGENT_BRIDGE_HUB'] == 'off'
+
+
+@pytest.mark.parametrize('field', ['model', 'effort'])
+@pytest.mark.parametrize('value', ['', '--dir=/', 'not-allowlisted', 'x' * 101, 'x\n', 'x y', 'x"'])
+async def test_remote_selection_rejected_before_dispatch(gateway, field, value):
+    client, registry, scope, _ = gateway
+    response = await client.post('/v1/tasks', json=payload(**{field: value}))
+    assert response.status_code == 400
+    assert not scope.owned_tasks and scope.calls == 0
+    assert len(registry.tasks) == 1
+
+
+async def test_remote_selection_allowlists(gateway):
+    client, registry, _, _ = gateway
+    agent = registry.config.get('fake')
+    agent.remote_allowed_models = ['provider/model:v1@latest']
+    agent.remote_allowed_efforts = ['high']
+    response = await client.post('/v1/tasks', json=payload(model='provider/model:v1@latest', effort='high'))
+    assert response.status_code == 200
+    task = registry.tasks[response.json()['task_id']]
+    assert task.model == 'provider/model:v1@latest' and task.effort == 'high'
+
+
+@pytest.mark.parametrize('field', ['remote_allowed_models', 'remote_allowed_efforts'])
+def test_remote_selection_allowlist_config_validation(field):
+    with pytest.raises(ValidationError):
+        AgentConfig(name='bad', protocol='fake', command=['fake'], **{field: ['--dir=/']})
 
 
 def test_remote_config_validation(tmp_path):
@@ -218,10 +319,7 @@ async def test_limits_json_depth_self_and_access(gateway, monkeypatch):
     scope.depth_budget = 0
     assert (await client.post('/v1/tasks', json=payload())).status_code == 403
     scope.depth_budget = 3
-    cfg.require_cf_access = True
-    assert (await client.post('/v1/tasks', json=payload())).status_code == 403
     assert (await client.post('/v1/tasks', json=payload(), headers={'Cf-Access-Jwt-Assertion': 'present'})).status_code == 200
-    cfg.require_cf_access = False
     cfg.max_concurrent_per_token = 1
     for tid in list(scope.owned_tasks):
         await registry.wait_task(tid, timeout_sec=5)
@@ -260,11 +358,20 @@ async def test_approval_workflow_via_admin(gateway, monkeypatch, approved):
         assert (await admin.get('/v1/approvals')).json()['approvals'] == []
 
 
-async def test_approval_expiry(gateway):
+async def test_approval_expiry(gateway, monkeypatch):
     client, registry, scope, _ = gateway
     registry.remote.config.require_approval = True
-    scope.expires = time.time() + 0.02
-    assert (await client.post('/v1/tasks', json=payload())).status_code == 403
+    scope.expires = time.time() + 3600
+    approve = registry.remote.approve
+
+    async def expire_approval(*args):
+        scope.expires = time.time() - 1
+        await approve(*args)
+
+    monkeypatch.setattr(registry.remote, 'approve', expire_approval)
+    response = await client.post('/v1/tasks', json=payload())
+    assert response.status_code == 403
+    assert response.json()['error'] == 'remote approval expired'
     assert not registry.remote.approvals
 
 

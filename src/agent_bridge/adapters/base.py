@@ -7,6 +7,7 @@ from pathlib import Path
 from agent_bridge.config import AgentConfig, EnvConfig
 from agent_bridge.models import Session, Task, TurnResult
 from agent_bridge.worker_env import enforce_env_deny
+from agent_bridge.worker_tokens import WorkerTokens
 
 # asyncio's default StreamReader limit is 64KB. Workers emit one JSON event
 # per line, and a single edit event can embed a whole file, so long lines are
@@ -28,6 +29,7 @@ class Adapter(ABC):
         self.agent = agent
         self.home = home
         self.env_config = env_config or EnvConfig()
+        self.worker_tokens: WorkerTokens | None = None
 
     def can_revive(self) -> bool:
         return self.agent.revivable

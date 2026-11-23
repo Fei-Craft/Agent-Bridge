@@ -128,7 +128,7 @@ async def test_legacy_request_id_survives_upgrade(bridge_home, tmp_path):
     try:
         assert (await restored.dispatch_task(**args))['task_id'] == first['task_id']
         with pytest.raises(ValueError, match='different dispatch request'):
-            await restored.dispatch_task(**args, callback_url='https://callback.invalid')
+            await restored.dispatch_task(**args, callback_url='https://8.8.8.8')
     finally:
         await restored.stop()
 

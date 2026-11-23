@@ -11,6 +11,8 @@ latest 500 in-memory tasks; audit shows up to 30 recent records.
 
 Available **only on the admin loopback listener**, never the remote gateway.
 Login links contain a single-use code valid for 60 seconds, not the bearer token.
+Opening the browser can expose that code in process arguments during its brief
+lifetime; `--no-open` prints the sensitive link instead. Do not save/share it.
 The page removes the fragment immediately and exchanges the code for a one-hour
 HttpOnly, SameSite=Strict session cookie. Codes/sessions are hashed, RAM-only;
 restart or logout invalidates sessions. No localStorage, CDN or frontend build.
@@ -119,7 +121,8 @@ still requires `user_requested:true` on dispatch/invoke (use `call invoke`).
 
 After [installing the same-user connector](SETUP.md#worker-deepseek-harness-desktop),
 finish an investigation in a DSH Desktop session and save it as an immutable
-fork point. Use the admin Hub API, not the separate cloud gateway:
+fork point. Use the admin Hub API. Scoped worker tokens and the separate
+cloud gateway cannot select or inherit saved baselines:
 
 | Operation | Route | Selection |
 | --- | --- | --- |
@@ -177,8 +180,8 @@ This is a trusted-local-user API, not a sandbox or multi-tenant authorization
 system: all bearer holders can access sessions, change preferences and spawn
 CLIs with your filesystem permissions. Caller headers prevent accidental loops,
 not malicious token holders. Never share tokens. Worker outputs are untrusted.
-Non-loopback bind requires `--allow-remote`; HTTP is not encrypted, so use a
-trusted TLS tunnel and firewall rather than exposing it to the Internet.
+The management listener is loopback-only; `--allow-remote` has been removed.
+Never expose this listener through a tunnel. Use the isolated remote gateway.
 
 ## Blocking calls and async push-back
 
@@ -205,8 +208,11 @@ agent-bridge ask codex 'Review' --cwd /absolute/project --async --callback-url h
 ```
 
 REST/MCP `dispatch_task` accepts `notify_caller`, `callback_url`, and optional
-`callback_secret`. The caller is identified by `X-Agent-Bridge-Caller` (set from
-`AGENT_BRIDGE_CALLER_SESSION` by the CLI/proxy); `notify_caller=true` without a
+`callback_secret_name` referencing the keyring; raw `callback_secret` is rejected.
+Use `agent-bridge callback-secret set NAME` (hidden input), `list`, or `delete NAME`.
+`ask --callback-secret` stores a temporary reference, not a secret in its request,
+and requires a shared secure keyring. The caller is bound to its worker bearer;
+`notify_caller=true` without a
 valid hub caller is rejected. Results become concise follow-up turns in that
 caller session, queued while busy, in dispatch order. They include agent/task
 IDs, status, result preview, files/remote PRs and fetch instructions. Delivery
@@ -214,9 +220,12 @@ turns do not increase call depth; calls made during delivery turns cannot
 request further notifications/callbacks, preventing automatic notification loops.
 
 Callbacks POST the first-page `get_result` JSON (including `ok:true`) to a trusted
-HTTP(S) endpoint, without redirects. With a secret, verify
-`X-Agent-Bridge-Signature: sha256=HEX` as HMAC-SHA256 over the **raw request body**.
-`X-Agent-Bridge-Task-Id` identifies the source. Four attempts use exponential
+HTTPS endpoint, without redirects. With a secret, verify
+`X-Agent-Bridge-Signature: sha256=HEX` as HMAC-SHA256 over
+`timestamp + "." + task_id + "." + raw_body` (UTF-8 prefix, unchanged body bytes).
+Read `X-Agent-Bridge-Timestamp` (Unix seconds) and `X-Agent-Bridge-Task` from the
+headers; reject timestamps more than **300 seconds** from your clock before
+accepting the signature. Four attempts use exponential
 backoff (1, 2, 4 seconds); `callback_delivery` records attempts/status/error in
 `check_task` / `get_result`. `caller_delivery` records follow-up task ID/status.
 Callbacks are at-least-once: receivers must deduplicate by task ID. Caller turns
@@ -226,8 +235,12 @@ delivery means the follow-up was submitted, not that its model turn succeeded.
 An ended/missing caller records a delivery failure. Callback secrets are stored
 per task in the OS keyring (RAM only if unavailable), never in task
 results/logs/state JSON; they are deleted after final delivery/failure or pruning.
-Do not put secrets in URLs. Callback destinations are trusted configuration:
-the hub can reach local/private HTTP endpoints; do not accept untrusted URLs.
+Do not put secrets in URLs. DNS is checked at dispatch and every send; all resolved
+addresses must be public unicast. Connections are pinned to a checked IP while
+preserving the original Host and TLS SNI/certificate hostname. Private, loopback,
+link-local, multicast, reserved and unspecified destinations are rejected.
+Only `[hub] allow_insecure_callbacks = true` permits loopback (including HTTP),
+for local development. It does not enable private-network callbacks.
 
 ## Cloud API workers
 
@@ -333,8 +346,8 @@ gateway URL, curl examples and allowed names. Tokens have 256 bits of entropy;
 the gateway retains only SHA-256 hashes/scopes in RAM. No token goes into Bridge
 state, transcripts, result files, logs or audit. Provider-side prompts necessarily
 contain it: treat cloud history and the provider as credential-bearing trusted
-systems. Restart invalidates all gateway tokens. `token_ttl_sec` defaults to the
-cloud turn timeout (24 hours when that timeout is disabled). End-of-turn revokes
+systems. Restart invalidates all gateway tokens. `token_ttl_sec` defaults to
+3600 seconds, independent of the cloud turn timeout. End-of-turn revokes
 new calls/cancellation immediately; owned status/result GETs retain up to
 `result_fetch_grace_sec` (default 30 seconds), never beyond token expiry.
 
@@ -353,8 +366,8 @@ preferences, wait and CORS preflight, is 404. POSTs require JSON and are streame
 under `max_body_bytes`; tokens have call budgets, per-minute rate limits and
 concurrent-task limits. Remote calls inherit cloud task depth, capped at three,
 and cannot call their own originating agent. No raw user callback URL is allowed
-on this surface (avoids remote callback SSRF). Admin callbacks remain trusted
-configuration and **can access private networks**; do not accept untrusted URLs.
+on this surface (avoids remote callback SSRF). Admin callbacks require public HTTPS
+destinations, except explicitly enabled loopback callbacks.
 
 `notify_caller: true` submits the local result into the originating Cursor agent
 as a follow-up run or Devin session as a message. It uses the durable ordered
@@ -362,7 +375,7 @@ delivery queue, waits for the current cloud turn to finish, and suppresses
 notification loops. Polling is available while the scoped token is valid. The
 underlying local task is not cancelled on HTTP disconnect or token expiry.
 
-Set `require_approval=true` (recommended) to hold submissions before execution.
+`require_approval=true` by default holds submissions before execution.
 Use `agent-bridge approvals list`, `approvals approve APPROVAL_ID`, or
 `approvals deny APPROVAL_ID`. Pending approvals expire with their token and are
 discarded on restart. Admin-only REST: GET `/v1/approvals`, POST
@@ -372,16 +385,19 @@ discarded on restart. Admin-only REST: GET `/v1/approvals`, POST
 `remote-audit.jsonl` is mode 0600, recording time, token hash prefix, peer IP,
 bounded CF-Ray/CF-Connecting-IP fields, route, agent, workspace and outcome, not
 prompts, Authorization or JWT contents. Forwarded CF metadata is advisory.
+Behind tunnels `remote_ip` usually identifies the loopback tunnel process;
+CF-Connecting-IP can be spoofed without trusted edge validation and a
+non-bypassable origin. Do not use either field for authentication/attribution.
 Audit rotates at 1 MiB with one backup (both mode 0600); unauthenticated writes
 are globally limited to 20/minute. Quotas are per token, not a global compute/DoS cap.
 
 For public use prefer a named tunnel behind **Cloudflare Access**, service-token
 policy and edge rate limits. Provide `CF-Access-Client-Id` and
 `CF-Access-Client-Secret` from the cloud provider's secret facility, not config,
-access_note or prompts. `require_cf_access=true` checks only the presence of
-`Cf-Access-Jwt-Assertion`; the hub does **not** cryptographically verify that JWT.
-It assumes Access validates it at the edge and the origin cannot be reached
-directly. A quick tunnel alone is not Cloudflare Access. Never expose admin
+access_note or prompts. The removed `require_cf_access` option is a configuration
+error: the hub does not validate Access JWTs. Configure authentication at the
+Access edge and ensure the origin cannot be reached directly.
+A quick tunnel alone is not Cloudflare Access. Never expose admin
 through either tunnel or a permissive ingress catch-all.
 
 [中文](HUB.zh-CN.md)

@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import uuid
 from collections.abc import Callable, Sequence
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -43,9 +44,10 @@ Usage:
   agent-bridge upgrade         one-command update (close coordinators first)
   agent-bridge install-skill   copy the coordinator skill into host skill dirs
   agent-bridge help            this text
-  agent-bridge serve [--host HOST] [--port PORT] [--allow-remote]
+  agent-bridge serve [--host LOOPBACK_HOST] [--port PORT]
   agent-bridge ui [--no-open]  open the local dashboard using a one-time login link
   agent-bridge secrets set|delete cursor|devin; agent-bridge secrets list
+  agent-bridge callback-secret set|delete NAME; agent-bridge callback-secret list
   agent-bridge approvals list|approve ID|deny ID
   agent-bridge tunnel [--name NAME] [--public-url HTTPS_ORIGIN]
   agent-bridge call TOOL [--key value ...]   call a running hub (JSON output)
@@ -223,10 +225,10 @@ def hub_command(args: list[str]) -> None:
     from agent_bridge.hub_client import discover
 
     parser = argparse.ArgumentParser(prog='agent-bridge ' + args[0])
+    ephemeral_secret_name = None
     if args[0] == 'serve':
         parser.add_argument('--host')
         parser.add_argument('--port', type=int)
-        parser.add_argument('--allow-remote', action='store_true')
         options = parser.parse_args(args[1:])
         serve(**vars(options))
         return
@@ -239,6 +241,7 @@ def hub_command(args: list[str]) -> None:
         parser.add_argument('--notify-caller', action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
         parser.add_argument('--callback-url', default=argparse.SUPPRESS)
         parser.add_argument('--callback-secret', action='store_true', default=argparse.SUPPRESS, help='prompt securely for the callback signing secret')
+        parser.add_argument('--callback-secret-name', default=argparse.SUPPRESS)
         parser.add_argument('--model', default=argparse.SUPPRESS, help='model ID to pass to the worker')
         parser.add_argument('--effort', default=argparse.SUPPRESS, help='reasoning effort to pass to the worker')
         parser.add_argument('--repo', default=argparse.SUPPRESS, help='cloud repository URL')
@@ -248,8 +251,15 @@ def hub_command(args: list[str]) -> None:
         parser.add_argument('--fork-label', default=argparse.SUPPRESS, help='name a DSH fork')
         options = parser.parse_args(args[1:])
         tool, values = 'invoke', vars(options)
-        if values.get('callback_secret'):
-            values['callback_secret'] = secret_store.prompt_secret('Callback signing secret: ')
+        if values.pop('callback_secret', False):
+            if 'callback_secret_name' in values:
+                parser.error('use either --callback-secret or --callback-secret-name')
+            ephemeral_secret_name = 'ephemeral-' + uuid.uuid4().hex
+            value = secret_store.prompt_secret('Callback signing secret: ')
+            if not secret_store.store_callback_secret(ephemeral_secret_name, value, ephemeral=True):
+                secret_store.delete_callback_secret(ephemeral_secret_name, ephemeral=True)
+                parser.error('a shared secure OS keyring is required for --callback-secret')
+            values['callback_secret_name'] = ephemeral_secret_name
         values['timeout_sec'] = values.pop('timeout')
     else:
         if len(args) < 2:
@@ -276,7 +286,7 @@ def hub_command(args: list[str]) -> None:
             timeout = values.pop('timeout_sec')
             if timeout is not None and timeout < 0:
                 raise ValueError('--timeout must be non-negative')
-            if async_mode and os.environ.get('AGENT_BRIDGE_CALLER_SESSION'):
+            if async_mode and os.environ.get('AGENT_BRIDGE_HUB_TOKEN', '').startswith('abw_'):
                 values.setdefault('notify_caller', True)
             dispatch = asyncio.create_task(client.call('dispatch_task', **values))
             try:
@@ -301,6 +311,9 @@ def hub_command(args: list[str]) -> None:
         result = asyncio.run(run())
     except KeyboardInterrupt:
         raise SystemExit(130) from None
+    finally:
+        if ephemeral_secret_name:
+            secret_store.delete_callback_secret(ephemeral_secret_name, ephemeral=True)
     if args[0] == 'ask' and result.get('ok'):
         if result.get('status') not in {'completed', 'failed', 'cancelled'}:
             print(json.dumps(result, ensure_ascii=False))
@@ -387,6 +400,24 @@ def main(argv: Sequence[str] | None = None) -> None:
             asyncio.run(remote_control())
         except KeyboardInterrupt:
             raise SystemExit(130) from None
+        return
+    if command == 'callback-secret':
+        parser = argparse.ArgumentParser(prog='agent-bridge callback-secret')
+        parser.add_argument('action', choices=['set', 'list', 'delete'])
+        parser.add_argument('name', nargs='?')
+        options = parser.parse_args(args[1:])
+        if options.action == 'list':
+            for name in secret_store.callback_secret_names():
+                print(name)
+        elif not options.name:
+            parser.error('set/delete requires a name')
+        elif options.action == 'delete':
+            secret_store.delete_callback_secret(options.name)
+            print(f'{options.name}: deleted')
+        else:
+            value = secret_store.prompt_secret('Callback signing secret: ')
+            stored = secret_store.store_callback_secret(options.name, value)
+            print('Stored in OS keyring.' if stored else 'Memory only; unavailable to other processes/restarts.')
         return
     if command == 'secrets':
         parser = argparse.ArgumentParser(prog='agent-bridge secrets')

@@ -82,7 +82,7 @@ class BridgeService:
         ref: str | None = None,
         notify_caller: bool = False,
         callback_url: str | None = None,
-        callback_secret: str | None = None,
+        callback_secret_name: str | None = None,
         baseline: str | None = None,
         fork_label: str | None = None,
     ) -> dict[str, Any]:
@@ -103,7 +103,7 @@ class BridgeService:
                 notify_caller=notify_caller,
                 caller_session_id=caller_session_context.get(),
                 callback_url=callback_url,
-                callback_secret=callback_secret,
+                callback_secret_name=callback_secret_name,
                 baseline=baseline,
                 fork_label=fork_label,
             )

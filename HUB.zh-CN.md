@@ -53,7 +53,8 @@ Hub 启动的 worker 仍通过环境获得凭证。重启后找不到签名密�
 无法抹除旧备份、快照、swap 或第三方 CLI 自己的凭证/日志，请自行加固并轮换旧密钥。
 
 所有 REST 请求（包括健康检查）都需要 bearer token。默认只监听回环地址；
-远程监听必须显式使用 `--allow-remote`。这是可信本机用户的接口，不是沙箱；
+管理端强制仅监听回环地址；`--allow-remote` 已删除。不可通过隧道暴露管理端。
+远程调用只能使用独立网关。这是可信本机用户的接口，不是沙箱；
 持有 token 即可操作所有 session、启动 CLI。不要暴露到公网，远程使用需 TLS 隧道与防火墙。
 
 ## 阻塞调用与异步回推
@@ -67,7 +68,9 @@ Ctrl-C 仅停止等待，并打印取结果命令。Worker 的 stall/turn 限制
 需要像工具一样直接拿结果时用 MCP `invoke_agent`，会周期发送 progress。
 部分客户端即便收到 progress 也有工具总时限，此时用异步 dispatch 或分段 wait。
 Worker 中 `ask --async` 默认 notify_caller=true，立即返回 task ID。
-REST/MCP dispatch 支持 `notify_caller`、`callback_url` 和可选 `callback_secret`。
+REST/MCP dispatch 支持 `notify_caller`、`callback_url` 和可选 `callback_secret_name`。
+原始 callback_secret 被拒绝；用 `agent-bridge callback-secret set 名称` 隐藏输入，
+`list` / `delete 名称` 管理。`ask --callback-secret` 仅发送临时引用，需要共享安全 keyring。
 没有 Hub worker caller session 的 notify_caller 会明确拒绝；顶层协调器可用回调或轮询。
 
 回推会在 caller 空闲后按 dispatch 顺序作为新一轮消息交付，包含 callee/task/status、
@@ -77,11 +80,15 @@ REST/MCP dispatch 支持 `notify_caller`、`callback_url` 和可选 `callback_se
 记录失败。check_task/get_result 暴露 caller_delivery 和 callback_delivery。
 
 回调 POST get_result 第一页 JSON（含 ok:true），最多四次，指数退避 1/2/4 秒。
-有 secret 时 X-Agent-Bridge-Signature 为 `sha256=HEX`，校验原始 body 的
-HMAC-SHA256；X-Agent-Bridge-Task-Id 为去重键。回调至少一次，请按 task ID 去重。
+有 secret 时 X-Agent-Bridge-Signature 为 `sha256=HEX`，HMAC-SHA256 输入为
+`timestamp + "." + task_id + "." + 原始body字节`（前缀 UTF-8）。
+读取 X-Agent-Bridge-Timestamp（Unix 秒）和 X-Agent-Bridge-Task；验证端拒绝超过
+300 秒时钟偏差，再校验签名。回调至少一次，请按 task ID 去重。
 secret 按 task 存在 OS keyring 中（不可用时仅内存），不进入 state JSON、
-结果或日志；最终投递成功/失败或 task 清理后删除。不跟随重定向，仅可信 HTTP(S) 地址，禁止 URL
-内嵌密码；Hub 能访问内网端点，不应接受不可信来源提供的 callback URL。
+结果或日志；最终投递成功/失败或 task 清理后删除。不跟随重定向，仅允许公网 HTTPS。
+dispatch 和每次发送都解析 DNS，拒绝私网、回环、链路本地、多播、保留和未指定地址，
+连接固定到验证后的 IP，保留原 Host 和 TLS SNI/证书主机名，防止 DNS 重绑定。
+仅 `[hub] allow_insecure_callbacks = true` 可额外允许回环 HTTP/HTTPS，供本地开发。
 
 ## 云端 API worker
 
@@ -152,8 +159,8 @@ URL 仅保存在运行时，重启需重新配置。named tunnel 的 ingress 只
 每次云端 turn 只在发给提供商的提示词中附加网关地址、256-bit 随机 `abr_` token、
 允许的 agent/workspace 名及 curl 用法。本地仅保留 SHA-256 哈希与作用域，
 不把原始 token 写入状态、转录、结果、日志或审计；云提供商的历史记录必然能看到它，
-必须视为可信且含凭证的系统。重启使所有 token 失效。TTL 默认等于云 agent turn 超时
-（禁用超时时用 24h）。云 turn 结束立即禁止新调用/取消；仅原 token 的结果/状态查询
+必须视为可信且含凭证的系统。重启使所有 token 失效。token_ttl_sec 默认 3600 秒，
+与云 agent turn 超时无关。云 turn 结束立即禁止新调用/取消；仅原 token 的结果/状态查询
 有 result_fetch_grace_sec（默认 30 秒）宽限，且不能超过 TTL。
 
 仅开放五个路由：POST `/v1/agents/{agent}/invoke`（阻塞并保持心跳）、
@@ -168,22 +175,27 @@ HTTP 断开/token 过期不取消已经启动的本地任务。
 
 notify_caller=true 使用现有持久有序回推队列，等待云 session 空闲后通过 Devin
 message / Cursor follow-up run 发送结果；交付 turn 不增加深度、不产生通知循环。
-也可在 token 有效期内轮询。推荐 require_approval=true，执行前本机
+也可在 token 有效期内轮询。默认 require_approval=true，执行前本机
 `agent-bridge approvals list`，再 `approve 审批ID` 或 `deny 审批ID`。
 审批随 token 过期，重启丢弃。管理端（远程网关不开放）REST：GET `/v1/approvals`、
 POST `/v1/approvals/{id}/approve` 或 `/deny`、GET `/v1/remote`、
 PUT `/v1/remote/public-url`（JSON public_url 字段）。
 
+`agent-bridge ui` 一次性登录码有效60秒，传给浏览器时可能短暂出现在进程参数中；
+`--no-open` 改为输出敏感链接，请勿保存/分享。链接不包含管理 bearer。
+
 remote-audit.jsonl 权限 0600，仅记录时间、哈希前缀、IP/有限 CF 元数据、路由、agent、
 workspace、结果，不记录请求消息、Authorization 或 JWT。CF IP/Ray 仅作参考，可能伪造。
+隧道后的 remote_ip 通常只是隧道进程的回环地址；无可信 Access 边缘验证且 origin
+可绕过时，CF-Connecting-IP 可被伪造，不作为认证或可靠身份归属依据。两监听器关闭 access log。
 请安全轮转审计；每 token 限额不是全局磁盘/DoS 防护。
 
 公网建议使用 named tunnel + **Cloudflare Access 服务令牌策略** + 边缘限流，
 云端从提供商密钥设施获取 CF-Access-Client-Id/Secret 请求头，不放在配置、提示词或
-access_note 中。require_cf_access=true 只检查 Cf-Access-Jwt-Assertion **存在**，
-Hub 不验证 JWT 签名；必须由 Access 边缘验证，且 origin 不可被直接绕过。
+access_note 中。已删除 require_cf_access（配置它会报错）；Hub 不验证 Access JWT。
+必须由 Access 边缘执行认证，且 origin 不可被直接绕过。
 quick tunnel 本身不等于 Access。禁止任何 ingress catch-all 指向管理端。
 
 白名单工作目录不是 OS 沙箱：本地 agent 的工具仍拥有宿主用户权限。为防云端提示注入，
 使用专用 OS 账户/容器、最小可信 agent 和独立 worktree，开启本机审批，不接触敏感文件。
-远程禁止 callback URL 防止 SSRF；管理端回调仍能访问内网，只接受可信配置。
+远程禁止 callback URL 防止 SSRF；管理端仅允许公网 HTTPS（或显式启用的回环回调）。
