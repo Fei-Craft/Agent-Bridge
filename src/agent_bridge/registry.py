@@ -777,11 +777,14 @@ class Registry:
         request: tuple = (agent, message, resolved_cwd, session_id, model, effort, title, user_requested)
         if cloud:
             request += (repo, ref)
+        legacy_request = request if not any((notify_caller, caller_session_id, callback_url, callback_secret)) else None
         request += (notify_caller, caller_session_id, callback_url, callback_secret)
         async with self._lock:
             if request_id is not None and request_id in self._requests:
                 previous_fp, task_id = self._requests[request_id]
-                if previous_fp != _request_fingerprint(request):
+                if previous_fp != _request_fingerprint(request) and (
+                    legacy_request is None or previous_fp != _request_fingerprint(legacy_request)
+                ):
                     raise ValueError("request_id is already bound to a different dispatch request")
                 task = self.tasks[task_id]
                 return {
