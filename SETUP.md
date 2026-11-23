@@ -666,6 +666,9 @@ and billing intact. Explicitly cancel or end_session to stop cloud work.
 
 ## Permissions
 
+The management listener accepts only loopback bind addresses. The old
+`--allow-remote` flag is rejected; never tunnel the admin listener.
+
 Gateway `token_ttl_sec` defaults to 3600 seconds, not the cloud turn timeout.
 The bearer is included in cloud session history: treat provider history as
 credential-bearing data even though Bridge redacts its own persisted output.

@@ -37,13 +37,13 @@ class _EmbeddedServer(uvicorn.Server):
         yield
 
 
-def validate_host(host: str, allow_remote: bool = False) -> None:
+def validate_host(host: str) -> None:
     try:
         loopback = host == 'localhost' or ipaddress.ip_address(host).is_loopback
     except ValueError:
         loopback = False
-    if not loopback and not allow_remote:
-        raise ValueError('non-loopback host requires --allow-remote')
+    if not loopback:
+        raise ValueError('management API must bind a loopback host; --allow-remote is no longer supported')
 
 
 def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1:8765', token: str | None = None) -> Starlette:
@@ -212,11 +212,11 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
     return app
 
 
-def serve(host: str | None = None, port: int | None = None, allow_remote: bool = False) -> None:
+def serve(host: str | None = None, port: int | None = None) -> None:
     registry = Registry.create(runtime_context='coordinator')
     host = host or registry.config.hub.host
     port = port if port is not None else registry.config.hub.port
-    validate_host(host, allow_remote and not registry.config.hub.remote.enabled)
+    validate_host(host)
     if registry.config.hub.remote.enabled and registry.config.hub.remote.port == port:
         raise ValueError('remote gateway and admin must use separate ports')
     registry.config.hub.port = port

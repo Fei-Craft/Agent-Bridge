@@ -32,6 +32,9 @@ workers with a separate OS account or container.
 
 ## Remote execution approval
 
+The management API is loopback-only, with no `--allow-remote` escape hatch.
+Never tunnel the admin listener; only the separate gateway may be exposed.
+
 Remote calls require local approval by default. Enabling the gateway rejects
 allowlisted agents with permission-skipping argv/presets (including the bundled
 Claude/OpenCode CLI presets) unless that agent explicitly sets

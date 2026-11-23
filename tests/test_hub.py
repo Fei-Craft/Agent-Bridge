@@ -341,9 +341,15 @@ def test_non_loopback():
     for host in ('127.0.0.1', '::1', 'localhost'):
         validate_host(host)
     for host in ('0.0.0.0', '::', 'example.com'):
-        with pytest.raises(ValueError, match='allow-remote'):
+        with pytest.raises(ValueError, match='loopback'):
             validate_host(host)
-        validate_host(host, True)
+
+
+def test_allow_remote_cli_flag_is_removed(capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(['serve', '--allow-remote'])
+    assert exc.value.code == 2
+    assert 'unrecognized arguments: --allow-remote' in capsys.readouterr().err
 
 
 async def test_discovery_and_proxy(hub, bridge_home, monkeypatch):

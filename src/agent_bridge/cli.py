@@ -43,7 +43,7 @@ Usage:
   agent-bridge upgrade         one-command update (close coordinators first)
   agent-bridge install-skill   copy the coordinator skill into host skill dirs
   agent-bridge help            this text
-  agent-bridge serve [--host HOST] [--port PORT] [--allow-remote]
+  agent-bridge serve [--host LOOPBACK_HOST] [--port PORT]
   agent-bridge ui [--no-open]  open the local dashboard using a one-time login link
   agent-bridge secrets set|delete cursor|devin; agent-bridge secrets list
   agent-bridge approvals list|approve ID|deny ID
@@ -226,7 +226,6 @@ def hub_command(args: list[str]) -> None:
     if args[0] == 'serve':
         parser.add_argument('--host')
         parser.add_argument('--port', type=int)
-        parser.add_argument('--allow-remote', action='store_true')
         options = parser.parse_args(args[1:])
         serve(**vars(options))
         return

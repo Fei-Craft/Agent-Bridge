@@ -158,8 +158,8 @@ This is a trusted-local-user API, not a sandbox or multi-tenant authorization
 system: all bearer holders can access sessions, change preferences and spawn
 CLIs with your filesystem permissions. Caller headers prevent accidental loops,
 not malicious token holders. Never share tokens. Worker outputs are untrusted.
-Non-loopback bind requires `--allow-remote`; HTTP is not encrypted, so use a
-trusted TLS tunnel and firewall rather than exposing it to the Internet.
+The management listener is loopback-only; `--allow-remote` has been removed.
+Never expose this listener through a tunnel. Use the isolated remote gateway.
 
 ## Blocking calls and async push-back
 
