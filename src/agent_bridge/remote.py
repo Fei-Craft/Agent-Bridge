@@ -180,7 +180,7 @@ class RemoteGateway:
 
     def list_approvals(self) -> dict:
         return {'ok': True, 'approvals': [redact({'approval_id': item.approval_id, 'cloud_task_id': item.scope.cloud_task_id,
-            'agent': item.agent, 'workspace': item.workspace, 'message': item.message[:1000], 'status': item.status})
+            'agent': item.agent, 'workspace': item.workspace, 'message': item.message, 'status': item.status})
             for item in self.approvals.values() if item.status == 'pending']}
 
     def decide(self, approval_id: str, approve: bool) -> dict:

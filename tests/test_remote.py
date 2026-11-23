@@ -21,7 +21,7 @@ from agent_bridge.config import AgentConfig, HubConfig, RemoteConfig, load_confi
 from agent_bridge.hub import create_app
 from agent_bridge.models import ProcState, Session, Task, TaskStatus
 from agent_bridge.registry import Registry
-from agent_bridge.remote import create_remote_app
+from agent_bridge.remote import Approval, create_remote_app
 from agent_bridge.tunnel import run_tunnel
 from agent_bridge.worker_env import build_worker_env
 
@@ -245,6 +245,13 @@ async def test_approval_expiry(gateway):
     scope.expires = time.time() + 0.02
     assert (await client.post('/v1/tasks', json=payload())).status_code == 403
     assert not registry.remote.approvals
+
+
+async def test_full_approval_message_is_visible(gateway):
+    _, registry, scope, _ = gateway
+    message = 'safe-looking prefix ' * 100 + 'DESTRUCTIVE SUFFIX MUST BE VISIBLE'
+    registry.remote.approvals['approval_long'] = Approval('approval_long', scope, 'fake', 'project', message)
+    assert registry.remote.list_approvals()['approvals'][0]['message'] == message
 
 
 async def test_chunked_body_limit_and_public_url_validation(gateway):
