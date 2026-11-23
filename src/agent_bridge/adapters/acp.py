@@ -22,7 +22,7 @@ from acp.schema import (
     RequestPermissionResponse,
 )
 
-from agent_bridge.acp_config import config_option_values
+from agent_bridge.acp_config import config_option_values, config_select_ids_for_category
 from agent_bridge.adapters.base import STDIO_LIMIT, Adapter
 from agent_bridge.claude_meta import (
     CLAUDE_MODE_BYPASS,
@@ -1059,7 +1059,7 @@ class AcpAdapter(Adapter):
         live.applied_model = model
 
     async def _sync_model_option(
-        self, live: _Live, session: Session, *, model: str | None = None,
+        self, live: _Live, session: Session, *, model: str | None = None, option_id: str = "model",
     ) -> None:
         """Apply the requested model through the typed ``model`` config option.
 
@@ -1071,24 +1071,24 @@ class AcpAdapter(Adapter):
         model = model or session.model
         if not model or (not verify and model == live.applied_model):
             return
-        current_model, _ = config_option_values(live.config_options, "model")
+        current_model, _ = config_option_values(live.config_options, option_id)
         if model == current_model:
             # Already the session's model (commonly the default a coordinator
             # names explicitly).
             self._remember_applied_model(live, model)
             return
         try:
-            confirmed = await self._set_config_option(live, session, "model", model)
+            confirmed = await self._set_config_option(live, session, option_id, model)
         except AcpUnavailableError:
             raise
         except Exception as exc:
-            _, offered = config_option_values(live.config_options, "model")
+            _, offered = config_option_values(live.config_options, option_id)
             raise RuntimeError(
                 f"{self.agent.name} rejected model {model!r}; "
                 f"session advertises {offered or 'no models'}"
             ) from exc
         if verify:
-            self._warn_config_mismatch(live, "model", model, confirmed)
+            self._warn_config_mismatch(live, option_id, model, confirmed)
         self._remember_applied_model(live, confirmed if verify else model)
 
     def _warn_config_mismatch(
@@ -1551,7 +1551,8 @@ class AcpAdapter(Adapter):
         tier: str | None = None
         model = requested_model or session.model
         if model:
-            current, offered = config_option_values(live.config_options, "model")
+            model_option_id = next(iter(config_select_ids_for_category(live.config_options, "model")), "model")
+            current, offered = config_option_values(live.config_options, model_option_id)
             if current is None and not offered:
                 live.pending_warnings.append(
                     f"{self.agent.name} does not advertise a model option; model={model!r} was ignored"
@@ -1562,7 +1563,7 @@ class AcpAdapter(Adapter):
                     suffix in {"off", "low", "medium", "high", "xhigh", "max"}
                 ):
                     model, tier = family, suffix
-                await self._sync_model_option(live, session, model=model)
+                await self._sync_model_option(live, session, model=model, option_id=model_option_id)
                 if live.applied_model == model:
                     session.model = requested_model or session.model
                 elif live.applied_model is not None:
@@ -1571,7 +1572,8 @@ class AcpAdapter(Adapter):
         if not effort:
             return
         advertised: dict[str, list[str]] = {}
-        for option_id in _GENERIC_EFFORT_OPTIONS:
+        effort_option_ids = config_select_ids_for_category(live.config_options, "thought_level")
+        for option_id in dict.fromkeys((*effort_option_ids, *_GENERIC_EFFORT_OPTIONS)):
             current, offered = config_option_values(live.config_options, option_id)
             if offered:
                 advertised[option_id] = offered

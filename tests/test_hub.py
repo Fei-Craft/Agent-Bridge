@@ -212,6 +212,21 @@ async def test_generic_acp_reports_worker_confirmed_model_and_effort(hub, tmp_pa
     assert registry.sessions[result['session_id']].model == 'family'
 
 
+async def test_generic_acp_uses_config_categories_with_custom_ids(hub, tmp_path):
+    client, registry = hub
+    registry.config.agents['echo'] = AgentConfig(
+        name='echo', protocol='acp',
+        command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
+        env={'BRIDGE_ECHO_SELECTION': '1', 'BRIDGE_ECHO_CATEGORIZED': '1'},
+    )
+    result = (await client.post('/v1/agents/echo/invoke', json={
+        'message': 'hello', 'cwd': str(tmp_path), 'model': 'family-xhigh',
+    })).json()
+    assert result['status'] == 'completed'
+    assert (result['observed_model'], result['observed_effort']) == ('family', 'xhigh')
+    assert result['warnings'] == []
+
+
 def test_hub_config(bridge_home):
     bridge_home.mkdir()
     (bridge_home / 'agents.toml').write_text('[hub]\nhost="localhost"\nport=9000\nmax_depth=2\n')

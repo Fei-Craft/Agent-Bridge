@@ -38,20 +38,26 @@ class EchoAgent:
         self._model = "default-model"
         self._effort = "low"
         self._loaded = False
+        categorized = os.environ.get("BRIDGE_ECHO_CATEGORIZED") == "1"
+        self._model_option = "engine" if categorized else "model"
+        self._effort_option = "depth" if categorized else "thought_level"
 
     def _config_options(self) -> list[SessionConfigOptionSelect] | None:
         if os.environ.get("BRIDGE_ECHO_SELECTION") != "1":
             return None
 
-        def option(option_id: str, current: str, values: list[str]) -> SessionConfigOptionSelect:
+        def option(
+            option_id: str, current: str, values: list[str], category: str,
+        ) -> SessionConfigOptionSelect:
             return SessionConfigOptionSelect(
                 id=option_id, name=option_id, type="select", current_value=current,
+                category=category if self._model_option != "model" else None,
                 options=[SessionConfigSelectOption(value=value, name=value) for value in values],
             )
 
-        result = [option("model", self._model, ["default-model", "family", "family-high"])]
+        result = [option(self._model_option, self._model, ["default-model", "family", "family-high"], "model")]
         if self._model == "family":
-            result.append(option("thought_level", self._effort, ["none", "low", "high", "xhigh"]))
+            result.append(option(self._effort_option, self._effort, ["none", "low", "high", "xhigh"], "thought_level"))
         return result
 
     def on_connect(self, conn: Any) -> None:
@@ -106,7 +112,7 @@ class EchoAgent:
             if option.id == config_id and any(
                 isinstance(item, SessionConfigSelectOption) and item.value == value for item in option.options
             ):
-                if config_id == "model":
+                if config_id == self._model_option:
                     self._model = str(value)
                     if os.environ.get("BRIDGE_ECHO_COERCE_MODEL") == "1":
                         self._model = "family"
