@@ -57,6 +57,10 @@ injection; they do not constrain what tools an agent can execute.
 
 ## Remote token lifetime
 
+`require_cf_access` has been removed and is rejected in configuration. Header
+presence does not authenticate a JWT. Enforce Cloudflare Access service-token
+authentication at the edge, with no direct-origin bypass; the hub does not verify JWTs.
+
 Callback signing secrets are passed by keyring reference (`callback_secret_name`),
 never as REST/MCP/call values. `agent-bridge callback-secret set NAME` prompts
 securely; `list` prints names only and `delete NAME` removes the entry.

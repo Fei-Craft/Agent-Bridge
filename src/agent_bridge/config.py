@@ -303,7 +303,12 @@ class RemoteConfig(BaseModel):
     require_approval: bool = True
     public_url: str = ''
     access_note: str = ''
-    require_cf_access: bool = False
+    @model_validator(mode='before')
+    @classmethod
+    def reject_removed_access_option(cls, value: Any) -> Any:
+        if isinstance(value, dict) and 'require_cf_access' in value:
+            raise ValueError('require_cf_access was removed; configure Cloudflare Access authentication at the edge')
+        return value
 
     @model_validator(mode='after')
     def validate_remote(self) -> RemoteConfig:

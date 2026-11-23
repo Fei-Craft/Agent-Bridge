@@ -300,10 +300,7 @@ async def test_limits_json_depth_self_and_access(gateway, monkeypatch):
     scope.depth_budget = 0
     assert (await client.post('/v1/tasks', json=payload())).status_code == 403
     scope.depth_budget = 3
-    cfg.require_cf_access = True
-    assert (await client.post('/v1/tasks', json=payload())).status_code == 403
     assert (await client.post('/v1/tasks', json=payload(), headers={'Cf-Access-Jwt-Assertion': 'present'})).status_code == 200
-    cfg.require_cf_access = False
     cfg.max_concurrent_per_token = 1
     for tid in list(scope.owned_tasks):
         await registry.wait_task(tid, timeout_sec=5)

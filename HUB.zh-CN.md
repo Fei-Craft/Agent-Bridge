@@ -183,8 +183,8 @@ workspace、结果，不记录请求消息、Authorization 或 JWT。CF IP/Ray �
 
 公网建议使用 named tunnel + **Cloudflare Access 服务令牌策略** + 边缘限流，
 云端从提供商密钥设施获取 CF-Access-Client-Id/Secret 请求头，不放在配置、提示词或
-access_note 中。require_cf_access=true 只检查 Cf-Access-Jwt-Assertion **存在**，
-Hub 不验证 JWT 签名；必须由 Access 边缘验证，且 origin 不可被直接绕过。
+access_note 中。已删除 require_cf_access（配置它会报错）；Hub 不验证 Access JWT。
+必须由 Access 边缘执行认证，且 origin 不可被直接绕过。
 quick tunnel 本身不等于 Access。禁止任何 ingress catch-all 指向管理端。
 
 白名单工作目录不是 OS 沙箱：本地 agent 的工具仍拥有宿主用户权限。为防云端提示注入，

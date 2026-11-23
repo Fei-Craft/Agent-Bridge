@@ -158,8 +158,6 @@ class RemoteGateway:
         if (not authorization.startswith('Bearer ') or not re.fullmatch(r'abr_[A-Za-z0-9_-]{43}', raw) or found is None or found.expires <= now
                 or (found.revoked and (not read_only or found.fetch_until <= now))):
             raise Rejected(401, 'invalid or expired token')
-        if self.config.require_cf_access and not request.headers.get('Cf-Access-Jwt-Assertion'):
-            raise Rejected(403, 'Cloudflare Access assertion required')
         now = time.monotonic()
         while found.requests and found.requests[0] <= now - 60:
             found.requests.popleft()

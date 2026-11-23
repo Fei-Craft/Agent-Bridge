@@ -428,6 +428,13 @@ deny = ["APP_*"]
     assert "APP_*" in cfg.env.deny
 
 
+@pytest.mark.parametrize('value', ['true', 'false'])
+def test_removed_require_cf_access_rejected(tmp_path, value):
+    (tmp_path / 'agents.toml').write_text('[hub.remote]\nrequire_cf_access = ' + value, encoding='utf-8')
+    with pytest.raises(ValueError, match='require_cf_access was removed; configure Cloudflare Access'):
+        load_config(tmp_path)
+
+
 def test_merge_env_unions_deny_lists():
     from agent_bridge.config import _merge_env
 

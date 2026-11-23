@@ -706,8 +706,8 @@ Cloud-to-local peer access is opt-in via `[hub.remote]`, a separate loopback
 listener with allowlisted agents and named absolute workspaces. See
 [gateway setup](HUB.md#opt-in-cloud-to-local-gateway) for scoped tokens, local
 approvals, `agent-bridge tunnel` and Cloudflare Access service-token headers.
-Never tunnel the admin port. Access assertion checking is presence-only; enforce
-actual authentication at the Access edge. Workspaces are routing allowlists,
+Never tunnel the admin port. The presence-only `require_cf_access` option is removed
+and rejected in config; enforce authentication at the Access edge. Workspaces are routing allowlists,
 not an OS sandbox; use isolated accounts/containers for untrusted cloud prompts.
 
 Most worker CLIs run in always-approve / skip-permissions mode. Codex CLI defaults to `--approve-for-me` (auto review + workspace-write); `--yolo` is opt-in via `[agents.codex] session_meta = { yolo = true }`. Review is the coordinator's job: `git diff`, build, tests. Cap follow-up turns at three, then the coordinator patches the rest.

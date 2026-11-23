@@ -362,10 +362,10 @@ are globally limited to 20/minute. Quotas are per token, not a global compute/Do
 For public use prefer a named tunnel behind **Cloudflare Access**, service-token
 policy and edge rate limits. Provide `CF-Access-Client-Id` and
 `CF-Access-Client-Secret` from the cloud provider's secret facility, not config,
-access_note or prompts. `require_cf_access=true` checks only the presence of
-`Cf-Access-Jwt-Assertion`; the hub does **not** cryptographically verify that JWT.
-It assumes Access validates it at the edge and the origin cannot be reached
-directly. A quick tunnel alone is not Cloudflare Access. Never expose admin
+access_note or prompts. The removed `require_cf_access` option is a configuration
+error: the hub does not validate Access JWTs. Configure authentication at the
+Access edge and ensure the origin cannot be reached directly.
+A quick tunnel alone is not Cloudflare Access. Never expose admin
 through either tunnel or a permissive ingress catch-all.
 
 [中文](HUB.zh-CN.md)
