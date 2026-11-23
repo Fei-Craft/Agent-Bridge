@@ -21,6 +21,7 @@ from agent_bridge.api import BridgeService, _error, wait_for_result
 from agent_bridge.hub_client import ROUTES
 from agent_bridge.paths import ensure_home
 from agent_bridge.registry import Registry
+from agent_bridge.secrets import delete, hub_key, remember, set_secret
 from agent_bridge.worker_env import caller_session_context, hub_worker_context
 
 
@@ -38,7 +39,7 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
     registry.runtime_context = 'coordinator'
     registry.dispatch_enabled = True
     registry.config.server.idle_exit_sec = 0
-    secret = token or secrets.token_urlsafe(32)
+    secret = remember(token or secrets.token_urlsafe(32))
     registry.deliveries.worker_context = {'AGENT_BRIDGE_HUB_URL': url, 'AGENT_BRIDGE_HUB_TOKEN': secret}
     call_depth: ContextVar[int] = ContextVar('call_depth', default=0)
 
@@ -57,16 +58,18 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
     async def lifespan(app: Starlette):
         path = registry.home / 'hub.json'
         await registry.start()
+        set_secret(hub_key(registry.home), secret)
         try:
             with tempfile.NamedTemporaryFile(mode='w', dir=registry.home, delete=False) as file:
                 temporary = file.name
-                json.dump(dict(url=url, pid=os.getpid(), token=secret, started_at=datetime.now(UTC).isoformat()), file)
+                json.dump(dict(url=url, pid=os.getpid(), started_at=datetime.now(UTC).isoformat()), file)
             os.replace(temporary, path)
             yield
         finally:
             try:
-                if path.exists() and json.loads(path.read_text()).get('token') == secret:
+                if path.exists() and json.loads(path.read_text()).get('pid') == os.getpid():
                     path.unlink()
+                    delete(hub_key(registry.home))
             finally:
                 await registry.stop()
 

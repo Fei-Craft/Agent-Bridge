@@ -631,8 +631,15 @@ Auth is `mcode login` under `~/.minimax` (`auth/<build>/<region>/auth.json`), or
 
 Use `protocol = "cloud"` with `[agents.NAME.cloud] provider = "cursor"` or
 `"devin"`; no `command` is required. Commented complete presets are in
-`agents.toml.example`. Bind `CURSOR_API_KEY` or `DEVIN_API_KEY` in the Bridge
-process environment; Devin also requires `org_id` or `DEVIN_ORG_ID`.
+`agents.toml.example`. Run `agent-bridge secrets set cursor` / `set devin` for
+hidden entry into the OS keyring, then restart the hub. `secrets list` shows
+presence only; `secrets delete cursor` removes a key. `CURSOR_API_KEY` /
+`DEVIN_API_KEY` remain explicit environment fallbacks with a warning.
+Devin also requires `org_id` or `DEVIN_ORG_ID`. Hub tokens and callback signing
+secrets also use keyring, never plaintext files. If no secure backend is usable,
+secrets remain in RAM only: independent clients cannot authenticate from discovery,
+and signed callbacks fail after losing their secret on restart (never unsigned).
+See [secret storage](HUB.md#secret-storage), including legacy-file migration caveats.
 Never put a key in config or a URL. No network request is made by the probe.
 
 See [cloud setup and lifecycle](HUB.md#cloud-api-workers) for optional repo/ref,

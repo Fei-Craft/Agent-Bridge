@@ -13,6 +13,7 @@ import httpx2
 from agent_bridge.adapters.base import Adapter
 from agent_bridge.config import CloudConfig
 from agent_bridge.models import Session, Task, TurnResult
+from agent_bridge.secrets import cloud_key, redact
 from agent_bridge.transcript import append_event
 
 
@@ -51,7 +52,7 @@ class CloudAdapter(Adapter):
             raise ValueError('cloud session was terminated and cannot be resumed; start a new session')
 
     async def _request(self, method: str, path: str, body: dict | None = None) -> dict:
-        key = os.environ.get(self.cfg.api_key_env, '')
+        key = cloud_key(self.cfg.provider, self.cfg.api_key_env)
         if not key:
             raise ValueError(f'missing cloud API key environment variable {self.cfg.api_key_env}')
         try:
@@ -62,7 +63,7 @@ class CloudAdapter(Adapter):
                 )
             if response.status_code >= 300:
                 raise CloudError(response.status_code)
-            data = _scrub(response.json(), key)
+            data = redact(_scrub(response.json(), key))
             if not isinstance(data, dict):
                 raise ValueError('cloud API response must be an object')
             return data

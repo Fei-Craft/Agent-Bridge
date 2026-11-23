@@ -23,6 +23,7 @@ from agent_bridge.dsh_home import (
 from agent_bridge.kimi_observe import kimi_home
 from agent_bridge.minimax_meta import describe_minimax_auth, minimax_data_dir
 from agent_bridge.processes import reap_subprocess, resolve_command
+from agent_bridge.secrets import cloud_key
 from agent_bridge.worker_env import build_worker_env, enforce_env_deny
 from agent_bridge.zcode_meta import describe_zcode_auth, zcode_home
 
@@ -121,7 +122,7 @@ async def probe_agent(cfg: AgentConfig, env_config: EnvConfig | None = None) -> 
         cloud = cfg.cloud
         assert cloud is not None
         missing = []
-        if not os.environ.get(cloud.api_key_env):
+        if not cloud_key(cloud.provider, cloud.api_key_env):
             missing.append(cloud.api_key_env)
         if cloud.provider == 'devin' and not (cloud.org_id or os.environ.get(cloud.org_id_env)):
             missing.append(cloud.org_id_env)

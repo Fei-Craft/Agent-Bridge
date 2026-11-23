@@ -11,6 +11,7 @@ from typing import Any
 
 from agent_bridge.models import TranscriptEvent
 from agent_bridge.paths import transcript_path
+from agent_bridge.secrets import redact
 
 log = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ WORKER_ACTIVITY_TYPES = frozenset(
 
 
 def append_event(session_id: str, event_type: str, data: dict[str, Any] | None = None, home: Path | None = None) -> TranscriptEvent:
-    event = TranscriptEvent(type=event_type, data=data or {})
+    event = TranscriptEvent(type=event_type, data=redact(data or {}))
     path = transcript_path(session_id, home)
     line = event.model_dump_json() + "\n"
     line_size = len(line.encode("utf-8"))

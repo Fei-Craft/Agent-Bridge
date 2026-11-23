@@ -20,8 +20,31 @@ your bridge home's `agents.toml`. Idle exit is disabled for the hub.
 
 Discovery first checks `AGENT_BRIDGE_HUB_URL` and `AGENT_BRIDGE_HUB_TOKEN`, then
 `<bridge home>/hub.json` (live PID and authenticated health check). The discovery
-file contains url, pid, token and started_at; it is atomically written with mode
-0600 and removed on clean shutdown. Restart coordinators to switch backends.
+file contains url, pid and started_at, **never a token**; it is atomically written
+with mode 0600 and removed on clean shutdown. The per-start bearer token is kept
+in the OS keyring; HubClient uses worker environment credentials first, otherwise
+the keyring entry for this Bridge home. Restart coordinators to switch backends.
+
+### Secret storage
+
+The standing rule is **NO plaintext secrets anywhere on disk (keys, hub token,
+callback secrets, issued tokens)**. Bridge uses the `agent-bridge` keyring service,
+accepting OS-backed secure stores, not plaintext/third-party file backends.
+Use `agent-bridge secrets set cursor` or `set devin` (hidden `getpass` input),
+`agent-bridge secrets list` (presence only), and `agent-bridge secrets delete cursor`.
+Cloud keys are loaded at startup; restart after changing them. Explicit named
+environment variables remain a warned fallback. Never put credentials in config,
+shell history, argv, URLs or prompts. `ask --callback-secret` prompts securely.
+
+On a headless/locked machine without a usable keyring, Bridge warns and retains
+secrets in RAM only: there is **no file fallback**. Independent CLI/MCP processes
+cannot discover a RAM-only hub token; configure/unlock a secure OS keyring first.
+Workers launched by that hub still receive their token through the environment.
+Signed callbacks whose secret is unavailable after restart fail with
+`secret_unavailable_after_restart`; they are never sent unsigned. Startup removes
+legacy plaintext hub tokens and migrates/deletes `callback-secrets/` files.
+This cannot erase old backups, filesystem snapshots, swap or third-party CLI
+credential/log files: secure those separately and rotate legacy credentials.
 
 ## REST reference
 
@@ -44,10 +67,11 @@ JSON request keys match the corresponding MCP tool arguments.
 | DELETE | `/v1/sessions/{id}` | end_session |
 | POST | `/v1/agents/{agent}/invoke` | dispatch + wait + first result page; message, cwd, optional timeout_sec and dispatch options |
 
-Read the token from your own hub.json; do not paste it into logs or commits:
+Prefer `agent-bridge call` (automatic keyring authentication). For trusted local
+REST scripts only, retrieve the token into memory; never print or persist it:
 
 ```sh
-export TOKEN=$(python -c 'import json; from agent_bridge.paths import bridge_home; print(json.loads((bridge_home()/"hub.json").read_text())["token"])')
+export TOKEN=$(python -c 'from agent_bridge.paths import bridge_home; from agent_bridge.secrets import get, hub_key; print(get(hub_key(bridge_home())) or "")')
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/v1/health
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"agent":"codex","message":"Review this project","cwd":"/absolute/project"}' \
@@ -159,8 +183,8 @@ use persisted task-ID receipts, also surviving a lost acknowledgment/restart.
 Pending deliveries survive restart, including `bridge_restarted` failures;
 delivery means the follow-up was submitted, not that its model turn succeeded.
 An ended/missing caller records a delivery failure. Callback secrets are stored
-only in owner-readable `callback-secrets/` files for retries, never in task
-results/logs/state JSON; they are removed after success or task pruning.
+per task in the OS keyring (RAM only if unavailable), never in task
+results/logs/state JSON; they are deleted after final delivery/failure or pruning.
 Do not put secrets in URLs. Callback destinations are trusted configuration:
 the hub can reach local/private HTTP endpoints; do not accept untrusted URLs.
 
@@ -168,9 +192,9 @@ the hub can reach local/private HTTP endpoints; do not accept untrusted URLs.
 
 Cloud workers run alongside local ACP/CLI workers; they do not need a local CLI
 or `cwd`. Add the commented `cursor-cloud` / `devin-cloud` presets from
-`agents.toml.example` to your user configuration, bind credentials in the **hub
-process environment**, and restart the hub. Keys are read from their named env
-variables at request time, never from `agents.<name>.env`, and are not persisted.
+`agents.toml.example` to your user configuration, run `agent-bridge secrets set cursor`
+or `agent-bridge secrets set devin`, and restart the hub. Keys use the OS keyring
+first, with a warned explicit environment fallback, never `agents.<name>.env`.
 An availability probe only checks credential/org presence, not entitlement.
 
 ```sh

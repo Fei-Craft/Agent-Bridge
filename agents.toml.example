@@ -123,7 +123,8 @@ max_depth = 3
 # MINIMAX_DATA_DIR = "D:/minimax"
 
 # Cloud API workers (uncomment complete blocks; no local command required).
-# Bind keys only in the hub process environment, never in this file.
+# Use `agent-bridge secrets set cursor` / `set devin`, then restart the hub.
+# Explicit environment fallback warns; never store keys in this file.
 # [agents.cursor-cloud]
 # protocol = "cloud"
 # stall_timeout_sec = 0

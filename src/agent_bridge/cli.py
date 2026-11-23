@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import logging
@@ -12,6 +13,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
+from agent_bridge import secrets as secret_store
 from agent_bridge.paths import bridge_home, bundled_skill, ensure_home
 from agent_bridge.persist import atomic_write_text
 from agent_bridge.processes import count_sibling_servers
@@ -43,7 +45,7 @@ Usage:
   agent-bridge help            this text
   agent-bridge serve [--host HOST] [--port PORT] [--allow-remote]
   agent-bridge call TOOL [--key value ...]   call a running hub (JSON output)
-  agent-bridge ask AGENT MESSAGE [--cwd DIR] [--repo URL] [--ref REF] [--session-id ID] [--timeout SEC] [--model MODEL] [--effort EFFORT] [--async] [--notify-caller] [--callback-url URL] [--callback-secret SECRET]
+  agent-bridge ask AGENT MESSAGE [--cwd DIR] [--repo URL] [--ref REF] [--session-id ID] [--timeout SEC] [--model MODEL] [--effort EFFORT] [--async] [--notify-caller] [--callback-url URL] [--callback-secret]
 
 Install:
   uv tool install {GIT_SOURCE}
@@ -232,7 +234,7 @@ def hub_command(args: list[str]) -> None:
         parser.add_argument('--async', dest='async_mode', action='store_true')
         parser.add_argument('--notify-caller', action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
         parser.add_argument('--callback-url', default=argparse.SUPPRESS)
-        parser.add_argument('--callback-secret', default=argparse.SUPPRESS)
+        parser.add_argument('--callback-secret', action='store_true', default=argparse.SUPPRESS, help='prompt securely for the callback signing secret')
         parser.add_argument('--model', default=argparse.SUPPRESS, help='model ID to pass to the worker')
         parser.add_argument('--effort', default=argparse.SUPPRESS, help='reasoning effort to pass to the worker')
         parser.add_argument('--repo', default=argparse.SUPPRESS, help='cloud repository URL')
@@ -240,6 +242,8 @@ def hub_command(args: list[str]) -> None:
         parser.add_argument('--session-id', default=argparse.SUPPRESS, help='continue a Bridge session')
         options = parser.parse_args(args[1:])
         tool, values = 'invoke', vars(options)
+        if values.get('callback_secret'):
+            values['callback_secret'] = secret_store.prompt_secret('Callback signing secret: ')
         values['timeout_sec'] = values.pop('timeout')
     else:
         if len(args) < 2:
@@ -314,6 +318,26 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
 
     command = args[0]
+    if command == 'secrets':
+        parser = argparse.ArgumentParser(prog='agent-bridge secrets')
+        parser.add_argument('action', choices=['set', 'list', 'delete'])
+        parser.add_argument('provider', nargs='?', choices=['cursor', 'devin'])
+        options = parser.parse_args(args[1:])
+        if options.action == 'list':
+            for provider in ('cursor', 'devin'):
+                print(f'{provider}: {"set" if secret_store.get("cloud:" + provider) else "not set"}')
+        elif not options.provider:
+            parser.error('set/delete requires a provider')
+        elif options.action == 'delete':
+            secret_store.delete('cloud:' + options.provider)
+            print(f'{options.provider}: deleted')
+        else:
+            value = secret_store.prompt_secret(f'{options.provider} API key: ')
+            if not value:
+                parser.error('secret must not be empty')
+            stored = secret_store.set_secret('cloud:' + options.provider, value)
+            print('Stored in OS keyring; restart the hub.' if stored else 'Memory only; this CLI process cannot share the key with the hub. Unlock/configure a secure OS keyring or use an explicit environment fallback.')
+        return
     if command in {'serve', 'call', 'ask'}:
         hub_command(args)
         return

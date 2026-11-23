@@ -24,7 +24,8 @@ or dispatch with a signed HTTP callback. Some MCP clients cap tool duration:
 use async/polling then. See [Hub setup, REST API and security](HUB.md).
 
 Cloud workers are also supported: Cursor Cloud (v1) and Devin (v3), configured
-with `protocol = "cloud"`, environment-only API keys, and repository URLs instead
+with `protocol = "cloud"`, OS-keyring API keys (`agent-bridge secrets set cursor` /
+`set devin`; hidden input, explicit warned environment fallback), and repository URLs instead
 of a local cwd. See [cloud setup](HUB.md#cloud-api-workers) and the commented
 presets in `agents.toml.example`. Cloud calls incur provider costs; Devin uses
 ACUs, and **cancelling terminates its session permanently**. Cloud workers do not
@@ -203,7 +204,8 @@ ask/invoke 默认等到结束；--timeout 可限制等待。MCP invoke_agent 会
 参见 [Hub 配置与安全说明](HUB.zh-CN.md)。
 
 也支持 Cursor Cloud v1 / Devin v3 云端 API worker：`protocol = "cloud"`，
-密钥仅从环境读取，使用仓库 URL 而非本地 cwd。配置示例见 `agents.toml.example`，
+密钥通过 `agent-bridge secrets set cursor` / `set devin` 隐藏输入并保存到 OS keyring，
+环境变量只作带警告的显式回退；使用仓库 URL 而非本地 cwd。配置示例见 `agents.toml.example`，
 用法见 [云端说明](HUB.zh-CN.md#云端-api-worker)。云端调用会产生费用，Devin 使用 ACU，
 **取消会永久终止 Devin session**。云端不继承本地同伴调用凭证，也无法访问 loopback Hub。
 Hub 关闭或空闲卸载不会停止云端 agent；远程计费可能继续，请显式取消或结束 session。

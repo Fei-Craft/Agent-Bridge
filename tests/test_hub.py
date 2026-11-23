@@ -35,7 +35,7 @@ async def test_routes(hub, bridge_home, tmp_path):
     client, registry = hub
     info = json.loads((bridge_home / 'hub.json').read_text())
     assert info['pid'] == os.getpid()
-    assert info['token'] == 'test-token'
+    assert 'token' not in info
     assert (bridge_home / 'hub.json').stat().st_mode & 0o777 == 0o600
     assert registry.runtime_context == 'coordinator'
     assert registry.config.server.idle_exit_sec == 0

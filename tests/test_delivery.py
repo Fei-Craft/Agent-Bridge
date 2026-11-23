@@ -16,6 +16,7 @@ from agent_bridge.hub import create_app
 from agent_bridge.hub_client import HubClient
 from agent_bridge.models import TaskStatus
 from agent_bridge.registry import Registry
+from agent_bridge.secrets import callback_key, get
 
 
 @pytest.fixture
@@ -178,14 +179,15 @@ async def test_callback_signature_retries_and_failure(registry, tmp_path, monkey
 
     monkeypatch.setattr('agent_bridge.delivery.httpx2.AsyncClient', lambda **kwargs: real_client(transport=httpx2.MockTransport(handler), **kwargs))
     task = await dispatch(registry, tmp_path, callback_url='http://listener/result', callback_secret='hidden-callback-secret')
-    secret_path = registry.deliveries.secret_path(task.task_id)
-    assert secret_path.stat().st_mode & 0o777 == 0o600
+    assert get(callback_key(registry.home, task.task_id)) is not None
+    assert not (registry.home / 'callback-secrets').exists()
     for _ in range(4):
         await registry.deliveries.callback(task)
         if task.callback_delivery['status'] == 'delivered':
             break
     assert len(requests) == min(4, failures + 1)
     assert task.callback_delivery['status'] == ('failed' if failures == 4 else 'delivered')
+    assert get(callback_key(registry.home, task.task_id)) is None
     result = await registry.get_result(task.task_id)
     assert result['callback_delivery'] == task.callback_delivery
     assert 'hidden-callback-secret' not in json.dumps(result) + (registry.home / 'state.json').read_text() + caplog.text

@@ -5,7 +5,6 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import time
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -13,6 +12,7 @@ from urllib.parse import urlsplit
 import httpx2
 
 from agent_bridge.models import TERMINAL_STATUSES, ProcState, Task
+from agent_bridge.secrets import callback_key, delete, get, set_secret
 from agent_bridge.worker_env import hub_worker_context
 
 if TYPE_CHECKING:
@@ -44,15 +44,11 @@ class Deliveries:
         self._runner: asyncio.Task | None = None
         self._callbacks: dict[str, asyncio.Task] = {}
 
-    def secret_path(self, task_id: str):
-        return self.registry.home / 'callback-secrets' / task_id
-
     def store_secret(self, task_id: str, secret: str) -> None:
-        path = self.secret_path(task_id)
-        path.parent.mkdir(mode=0o700, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, 'w') as file:
-            file.write(secret)
+        set_secret(callback_key(self.registry.home, task_id), secret)
+
+    def delete_secret(self, task_id: str) -> None:
+        delete(callback_key(self.registry.home, task_id))
 
     def start(self) -> None:
         self._runner = asyncio.create_task(self.run(), name='result-deliveries')
@@ -131,6 +127,7 @@ class Deliveries:
         attempts = task.callback_delivery.get('attempts', 0)
         if attempts >= CALLBACK_ATTEMPTS:
             task.callback_delivery.update(status='failed', error='callback retry budget exhausted')
+            self.delete_secret(task.task_id)
             registry.save()
             return
         task.callback_delivery.update(status='sending', attempts=attempts + 1)
@@ -140,9 +137,14 @@ class Deliveries:
             payload = {'ok': True, **await registry.get_result(task.task_id)}
             body = json.dumps(payload, ensure_ascii=False).encode()
             headers = {'Content-Type': 'application/json', 'X-Agent-Bridge-Task-Id': task.task_id}
-            path = self.secret_path(task.task_id)
             if task.callback_signed:
-                digest = hmac.new(path.read_bytes(), body, hashlib.sha256).hexdigest()
+                secret = get(callback_key(registry.home, task.task_id))
+                if secret is None:
+                    task.callback_delivery.update(status='failed', error='secret_unavailable_after_restart')
+                    registry.save()
+                    await registry.flush_state()
+                    return
+                digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
                 headers['X-Agent-Bridge-Signature'] = f'sha256={digest}'
             async with httpx2.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as client:
                 response = await client.post(str(task.callback_url), content=body, headers=headers)
@@ -155,5 +157,5 @@ class Deliveries:
             task.callback_delivery.update(status='delivered')
             task.callback_delivery.pop('error', None)
         registry.save()
-        if task.callback_delivery['status'] == 'delivered' and await registry.flush_state():
-            self.secret_path(task.task_id).unlink(missing_ok=True)
+        if task.callback_delivery['status'] in {'delivered', 'failed'} and await registry.flush_state():
+            self.delete_secret(task.task_id)

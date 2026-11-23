@@ -18,9 +18,24 @@ worker 自动继承 Hub 地址、token、调用者 session id，嵌套 MCP 也�
 `agent-bridge ask opencode '检查项目' --cwd /绝对路径 --model opendesign/deepseek-v4.1-flash-eco`。
 `call invoke` / `call dispatch_task` 也可通过通用参数传入 `--model` 和 `--effort`。
 
-启动时在 bridge home 写入权限 0600 的 hub.json，包含地址、PID、随机 bearer token、
-启动时间，关闭时删除。发现顺序是环境变量 AGENT_BRIDGE_HUB_URL/TOKEN，然后检查
-hub.json 的 PID 与健康接口。`AGENT_BRIDGE_HUB=off` 可禁用发现。
+启动时在 bridge home 写入权限 0600 的 hub.json，仅包含地址、PID、启动时间，
+**不包含 token**，关闭时删除。每次启动生成的 bearer token 保存在 OS keyring 中。
+发现顺序是环境变量 AGENT_BRIDGE_HUB_URL/TOKEN，然后读取 hub.json 的地址、PID，
+从 keyring 获取该 Bridge home 的 token 并检查健康接口。`AGENT_BRIDGE_HUB=off` 可禁用发现。
+
+### 密钥存储
+
+严格遵守 **NO plaintext secrets anywhere on disk (keys, hub token, callback secrets, issued tokens)**。
+使用 `agent-bridge` keyring 服务，只接受安全的 OS 后端，不使用明文文件后端。
+`agent-bridge secrets set cursor` / `set devin` 使用 getpass 隐藏输入；`secrets list`
+仅显示是否存在；`secrets delete cursor` 删除。修改后重启 Hub。`ask --callback-secret`
+同样隐藏输入，不要把密钥放在命令参数、shell 历史、配置、URL 或提示词中。
+如果 keyring 不可用/锁定，明确警告，只保存在内存中，绝不回退到文件。
+此时独立 CLI/MCP 进程无法发现 Hub 的内存 token，需先配置/解锁安全的 OS keyring；
+Hub 启动的 worker 仍通过环境获得凭证。重启后找不到签名密钥的回调以
+`secret_unavailable_after_restart` 失败，绝不降级为无签名发送。
+启动会删除旧 hub.json 明文 token，迁移并删除旧 callback-secrets/ 文件。
+无法抹除旧备份、快照、swap 或第三方 CLI 自己的凭证/日志，请自行加固并轮换旧密钥。
 
 所有 REST 请求（包括健康检查）都需要 bearer token。默认只监听回环地址；
 远程监听必须显式使用 `--allow-remote`。这是可信本机用户的接口，不是沙箱；
@@ -49,17 +64,18 @@ REST/MCP dispatch 支持 `notify_caller`、`callback_url` 和可选 `callback_se
 回调 POST get_result 第一页 JSON（含 ok:true），最多四次，指数退避 1/2/4 秒。
 有 secret 时 X-Agent-Bridge-Signature 为 `sha256=HEX`，校验原始 body 的
 HMAC-SHA256；X-Agent-Bridge-Task-Id 为去重键。回调至少一次，请按 task ID 去重。
-secret 仅存在权限 0600 的 callback-secrets/ 文件，用于重启重试，不进入 state JSON、
-结果或日志；成功或 task 清理后删除。不跟随重定向，仅可信 HTTP(S) 地址，禁止 URL
+secret 按 task 存在 OS keyring 中（不可用时仅内存），不进入 state JSON、
+结果或日志；最终投递成功/失败或 task 清理后删除。不跟随重定向，仅可信 HTTP(S) 地址，禁止 URL
 内嵌密码；Hub 能访问内网端点，不应接受不可信来源提供的 callback URL。
 
 ## 云端 API worker
 
 支持 Cursor v1 和 Devin v3，与本地 ACP/CLI 并存，无需本地 CLI 或 cwd。
 将 `agents.toml.example` 中注释的 `cursor-cloud` / `devin-cloud` 配置复制到用户配置。
-在启动 Hub 的进程环境中绑定 `CURSOR_API_KEY` / `DEVIN_API_KEY`，Devin 还需
-`org_id` 或 `DEVIN_ORG_ID`。密钥仅在请求时读取，不保存、不写日志；不要把密钥放进
-配置、URL 或提示词。探测 available 只检查变量是否存在，不验证额度或权限。
+使用 `agent-bridge secrets set cursor` / `set devin` 保存密钥并重启 Hub；
+`CURSOR_API_KEY` / `DEVIN_API_KEY` 是带警告的显式环境回退。Devin 还需
+`org_id` 或 `DEVIN_ORG_ID`。密钥不写入普通文件/日志；不要把密钥放进
+配置、URL 或提示词。探测 available 只检查凭证/组织是否存在，不验证额度或权限。
 
 ```sh
 agent-bridge ask cursor-cloud '修复测试' --repo https://github.com/org/repo --ref main --model composer-2 --timeout 3600

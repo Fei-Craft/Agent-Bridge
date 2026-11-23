@@ -10,6 +10,7 @@ import psutil
 
 from agent_bridge.api import _error, wait_for_result
 from agent_bridge.paths import bridge_home
+from agent_bridge.secrets import get, hub_key, remember
 
 # tool: (HTTP method, path, path argument)
 ROUTES = {
@@ -30,7 +31,7 @@ ROUTES = {
 class HubClient:
     def __init__(self, url: str, token: str = '') -> None:
         self.url = url.rstrip('/')
-        self.token = token
+        self.token = remember(token)
 
     async def call(self, tool: str, **kwargs: Any) -> dict[str, Any]:
         try:
@@ -81,7 +82,8 @@ async def discover(home: Path | None = None) -> HubClient | None:
             info = json.loads(((home or bridge_home()) / 'hub.json').read_text())
             if not psutil.pid_exists(int(info['pid'])):
                 return None
-            url, token = info['url'], info['token']
+            url = info['url']
+        token = token or get(hub_key(home or bridge_home())) or ''
         async with httpx2.AsyncClient(trust_env=False, timeout=2) as client:
             response = await client.get(str(url).rstrip('/') + '/v1/health', headers={'Authorization': f'Bearer {token}'})
             if response.status_code != 200 or not response.json().get('ok'):

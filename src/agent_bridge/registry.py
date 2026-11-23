@@ -51,6 +51,7 @@ from agent_bridge.persist import (
 from agent_bridge.probes import probe_agent
 from agent_bridge.processes import count_sibling_servers, owner_alive, process_create_time, reap_orphans
 from agent_bridge.quota import QuotaCache, fetch_quota, looks_like_quota_error, provider_table, unknown_quota
+from agent_bridge.secrets import cloud_key, migrate, redact
 from agent_bridge.transcript import (
     append_event,
     flush_pending,
@@ -470,6 +471,10 @@ class Registry:
 
     async def start(self) -> None:
         self._stopping = False
+        migrate(self.home)
+        for cfg in self.config.agents.values():
+            if cfg.cloud is not None:
+                cloud_key(cfg.cloud.provider, cfg.cloud.api_key_env)
         install_host_env(self.config.env)
         reap_orphans(self.home)
         payload = self._load_state()
@@ -1182,7 +1187,7 @@ class Registry:
         if task_id in self.tasks and pending(self.tasks[task_id]):
             return
         self.tasks.pop(task_id, None)
-        self.deliveries.secret_path(task_id).unlink(missing_ok=True)
+        self.deliveries.delete_secret(task_id)
         self._requests = {
             key: binding for key, binding in self._requests.items() if binding[1] != task_id
         }
@@ -1470,7 +1475,7 @@ class Registry:
         persisted = await self._persisted(task)
         if persisted is not None:
             payload["persisted"] = persisted
-        return payload
+        return redact(payload)
 
     async def wait_task(self, task_id: str, timeout_sec: float = DEFAULT_WAIT_SEC) -> dict:
         task = self._require_task(task_id)

@@ -327,9 +327,9 @@ async def test_rest_and_mcp_dispatch(cloud_registry):
     tool = next(t for t in await server.mcp.list_tools() if t.name == 'dispatch_task')
     assert 'cwd' not in tool.input_schema['required']
     assert {'repo', 'ref'} <= tool.input_schema['properties'].keys()
-    app = create_app(cloud_registry, token='test')
+    app = create_app(cloud_registry, token='hub-authentication-credential-value')
     async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url='http://hub',
-                                 headers={'Authorization': 'Bearer test'}) as client:
+                                 headers={'Authorization': 'Bearer hub-authentication-credential-value'}) as client:
         response = await client.post('/v1/agents/cursor/invoke', json={'message': 'rest', 'repo': 'repo'})
         assert response.status_code == 200
         assert response.json()['remote']['agent_id'] == 'bc-test'
