@@ -14,9 +14,13 @@ from acp.schema import (
     AgentCapabilities,
     Implementation,
     InitializeResponse,
+    LoadSessionResponse,
     NewSessionResponse,
     PromptCapabilities,
     PromptResponse,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
+    SetSessionConfigOptionResponse,
     Usage,
 )
 
@@ -31,6 +35,24 @@ class EchoAgent:
         self._conn: Any = None
         self._session_id = "echo-session"
         self._ready = False
+        self._model = "default-model"
+        self._effort = "low"
+        self._loaded = False
+
+    def _config_options(self) -> list[SessionConfigOptionSelect] | None:
+        if os.environ.get("BRIDGE_ECHO_SELECTION") != "1":
+            return None
+
+        def option(option_id: str, current: str, values: list[str]) -> SessionConfigOptionSelect:
+            return SessionConfigOptionSelect(
+                id=option_id, name=option_id, type="select", current_value=current,
+                options=[SessionConfigSelectOption(value=value, name=value) for value in values],
+            )
+
+        result = [option("model", self._model, ["default-model", "family", "family-high"])]
+        if self._model == "family":
+            result.append(option("thought_level", self._effort, ["none", "low", "high", "xhigh"]))
+        return result
 
     def on_connect(self, conn: Any) -> None:
         self._conn = conn
@@ -60,9 +82,11 @@ class EchoAgent:
         if os.environ.get("BRIDGE_ECHO_FAILURE") == "new":
             raise RequestError.auth_required()
         self._ready = True
-        return NewSessionResponse(session_id=self._session_id)
+        return NewSessionResponse(session_id=self._session_id, config_options=self._config_options())
 
-    async def load_session(self, cwd: str, session_id: str, mcp_servers=None, **kwargs: Any) -> None:
+    async def load_session(
+        self, cwd: str, session_id: str, mcp_servers=None, **kwargs: Any
+    ) -> LoadSessionResponse | None:
         if os.environ.get("BRIDGE_ECHO_FAILURE") == "load":
             raise RequestError.auth_required()
         if os.environ.get("BRIDGE_ECHO_FAILURE") == "load_internal":
@@ -71,7 +95,26 @@ class EchoAgent:
             raise RequestError(-32603, "native session data corrupt")
         self._session_id = session_id
         self._ready = True
-        return None
+        self._loaded = True
+        options = self._config_options()
+        return LoadSessionResponse(config_options=options) if options is not None else None
+
+    async def set_config_option(
+        self, config_id: str, session_id: str, value: str | bool, **kwargs: Any
+    ) -> SetSessionConfigOptionResponse:
+        for option in self._config_options() or []:
+            if option.id == config_id and any(
+                isinstance(item, SessionConfigSelectOption) and item.value == value for item in option.options
+            ):
+                if config_id == "model":
+                    self._model = str(value)
+                    self._effort = "low"
+                else:
+                    if value == "high" and os.environ.get("BRIDGE_ECHO_REJECT_HIGH") == "1":
+                        raise RequestError(-32602, "rejected thought level")
+                    self._effort = str(value)
+                return SetSessionConfigOptionResponse(config_options=self._config_options() or [])
+        raise RequestError(-32602, "unsupported config value")
 
     async def prompt(self, session_id: str, prompt: list[Any], **kwargs: Any) -> PromptResponse:
         if not self._ready:
@@ -91,15 +134,16 @@ class EchoAgent:
             elif isinstance(block, dict) and isinstance(block.get("text"), str):
                 text += block["text"]
         if self._conn is not None:
+            label = "loaded" if self._loaded and self._config_options() else "echo"
             try:
                 await self._conn.session_update(
                     session_id=session_id,
-                    update=update_agent_message_text(f"echo:{text}"),
+                    update=update_agent_message_text(f"{label}:{text}"),
                 )
             except TypeError:
                 await self._conn.session_update(
                     session_id,
-                    update_agent_message_text(f"echo:{text}"),
+                    update_agent_message_text(f"{label}:{text}"),
                 )
         return PromptResponse(
             stop_reason="end_turn",
