@@ -42,6 +42,18 @@ Tokens support `{prompt}`, `{session}`, `{model}`, `{effort}`, `{cwd}`; escape l
 braces as `{{` / `}}`. Each token remains one argv element, not shell code. For stdin
 prompts use `prompt_stdin = true` and `prompt_args = []`. Missing configured selection
 arguments are errors rather than silently ignoring a requested model/effort.
+Positional `{prompt}` must be a standalone token after `--`; unsafe custom
+templates now fail instead of treating leading prompt text as CLI options.
+Claude's preset sends text on stdin (`--input-format` defaults to text);
+OpenCode uses `--` before its message. Cursor also uses `--`, but that preset's
+compatibility remains unverified because cursor-agent is not installed here.
+
+Model/effort selections must match
+`^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]{0,99}$` (1–100 characters).
+Remote requests may select only values explicitly listed under that agent's
+`remote_allowed_models` / `remote_allowed_efforts`; both default to empty lists.
+Omitting selections still uses the configured defaults. Local effort aliases
+and supported levels are unchanged, subject to this syntax validation.
 
 Parsers `claude`/`cursor` consume stream-json assistant/result/session events;
 `opencode` consumes run JSON text/tool/step/token events. `jsonl` accepts objects with

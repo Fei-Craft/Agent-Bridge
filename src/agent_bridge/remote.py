@@ -23,7 +23,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from agent_bridge.api import BridgeService, wait_for_result
-from agent_bridge.models import TERMINAL_STATUSES, Task, iso
+from agent_bridge.models import TERMINAL_STATUSES, Task, iso, validate_selection
 from agent_bridge.secrets import redact
 
 if TYPE_CHECKING:
@@ -308,8 +308,13 @@ class RemoteGateway:
             if not isinstance(message, str) or not message.strip() or not isinstance(notify, bool):
                 raise Rejected(400, 'message must be nonempty text; notify_caller must be boolean')
             for key in ('model', 'effort'):
-                if key in body and not isinstance(body[key], str):
-                    raise Rejected(400, key + ' must be text')
+                if key in body:
+                    if not isinstance(body[key], str):
+                        raise Rejected(400, key + ' must be text')
+                    validate_selection(body[key], key)
+                    allowed = getattr(self.registry.config.get(agent), 'remote_allowed_' + ('models' if key == 'model' else 'efforts'))
+                    if body[key] not in allowed:
+                        raise Rejected(400, key + ' is not allowlisted for this remote agent')
             timeout = body.get('timeout_sec')
             if timeout is not None and (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout < 0):
                 raise Rejected(400, 'timeout_sec must be finite and nonnegative')

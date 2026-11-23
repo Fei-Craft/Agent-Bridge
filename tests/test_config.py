@@ -7,11 +7,31 @@ from pydantic import ValidationError
 from agent_bridge.config import (
     AgentConfig,
     AppConfig,
+    CliConfig,
+    CloudConfig,
     _coordinator_span,
     load_config,
     write_coordinator_overlay,
 )
 from agent_bridge.paths import bundled_agents_toml
+
+
+def test_cli_prompt_transport_defaults():
+    assert CliConfig().prompt_args == ['--', '{prompt}']
+    assert CliConfig(prompt_stdin=True).prompt_args == []
+
+
+@pytest.mark.parametrize('value', ['', '--dir=/', 'x y', 'x' * 101, 'x\n', 'x"'])
+def test_cloud_model_selection_syntax(value):
+    for field in ('model', 'devin_mode'):
+        with pytest.raises(ValidationError):
+            CloudConfig(provider='devin', **{field: value})
+
+
+def test_cloud_model_selection_boundaries():
+    assert CloudConfig(provider='devin').model is None
+    for model in ('a', 'x' * 100, 'provider/model:v1@latest'):
+        assert CloudConfig(provider='devin', model=model).model == model
 
 
 def test_loads_bundled_agents():

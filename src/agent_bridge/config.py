@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, model_validator
 
+from agent_bridge.models import Selection
 from agent_bridge.paths import bridge_home, bundled_agents_toml
 from agent_bridge.persist import atomic_write_text
 
@@ -110,13 +111,19 @@ DEFAULT_INHERIT_KEYS = (
 
 class CliConfig(BaseModel):
     command: list[str] = Field(default_factory=list)
-    prompt_args: list[str] = Field(default_factory=lambda: ['{prompt}'])
+    prompt_args: list[str] = Field(default_factory=lambda: ['--', '{prompt}'])
     prompt_stdin: bool = False
     resume_args: list[str] = Field(default_factory=list)
     model_args: list[str] = Field(default_factory=list)
     effort_args: list[str] = Field(default_factory=list)
     extra_args: list[str] = Field(default_factory=list)
     parser: Literal['text', 'jsonl', 'claude', 'opencode', 'cursor'] = 'text'
+
+    @model_validator(mode='after')
+    def default_prompt_transport(self) -> CliConfig:
+        if self.prompt_stdin and 'prompt_args' not in self.model_fields_set:
+            self.prompt_args = []
+        return self
 
 
 class CloudConfig(BaseModel):
@@ -128,8 +135,8 @@ class CloudConfig(BaseModel):
     repo: str | None = None
     ref: str | None = None
     auto_create_pr: bool = False
-    model: str | None = None
-    devin_mode: str | None = None
+    model: Selection | None = None
+    devin_mode: Selection | None = None
     max_acu_limit: int | None = Field(default=None, gt=0)
     poll_interval_sec: float = Field(default=5, gt=0)
 
@@ -172,6 +179,8 @@ class AgentConfig(BaseModel):
     # never read.
     config_overrides: list[str] = Field(default_factory=list)
     remote_allow_unsafe_permissions: bool = False
+    remote_allowed_models: list[Selection] = Field(default_factory=list)
+    remote_allowed_efforts: list[Selection] = Field(default_factory=list)
 
     def unsafe_remote_permissions(self) -> bool:
         argv = [*self.command, *(arg for cmd in self.fallback_commands for arg in cmd),

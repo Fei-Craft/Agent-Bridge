@@ -21,7 +21,7 @@ max_depth = 3
 # revivable = true
 # [agents.my_cli.cli]
 # parser = "jsonl"  # text | jsonl | claude | opencode | cursor
-# prompt_args = ["-p", "{prompt}"]
+# prompt_args = ["--", "{prompt}"] # never pass an unprotected positional prompt
 # prompt_stdin = false  # for stdin: true AND prompt_args = []
 # resume_args = ["--resume", "{session}"]
 # model_args = ["--model", "{model}"]
@@ -137,6 +137,10 @@ max_depth = 3
 # rate_limit_per_min = 60
 # max_body_bytes = 65536
 # require_approval = true # default; local approval required before execution
+# # Per-agent remote selections are denied unless explicitly allowlisted:
+# # [agents.my_cli]
+# # remote_allowed_models = ["provider/model"]
+# # remote_allowed_efforts = ["low", "high"]
 # public_url = "https://your-gateway.example.com"
 # access_note = "Supply Cloudflare Access service-token headers via your cloud secret store."
 # require_cf_access = true # header presence; validate JWT/service token at Cloudflare Access edge

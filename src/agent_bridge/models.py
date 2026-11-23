@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
+
+SELECTION_PATTERN = r'^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]{0,99}$'
+Selection = Annotated[str, Field(pattern=SELECTION_PATTERN)]
+
+
+def validate_selection(value: str | None, name: str) -> None:
+    if value is not None and (not isinstance(value, str) or not re.fullmatch(SELECTION_PATTERN, value)):
+        raise ValueError(f'{name} must be 1-100 characters: letters, digits, . _ : / @ or non-leading -')
 
 
 def utcnow() -> datetime:
@@ -102,8 +111,8 @@ class Session(BaseModel):
     remote: dict[str, Any] = Field(default_factory=dict)
     native_session_id: str | None = None
     proc_state: ProcState = ProcState.idle_unloaded
-    model: str | None = None
-    effort: str | None = None
+    model: Selection | None = None
+    effort: Selection | None = None
     title: str | None = None
     turns: int = 0
     created_at: str = Field(default_factory=iso)
@@ -140,8 +149,8 @@ class Task(BaseModel):
     repo: str | None = None
     ref: str | None = None
     remote: dict[str, Any] = Field(default_factory=dict)
-    model: str | None = None
-    effort: str | None = None
+    model: Selection | None = None
+    effort: Selection | None = None
     observed_model: str | None = None
     observed_effort: str | None = None
     status: TaskStatus = TaskStatus.queued

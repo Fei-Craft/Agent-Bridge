@@ -123,6 +123,33 @@ async def test_remote_workers_never_receive_admin_credentials(gateway, monkeypat
     assert captured[0]['AGENT_BRIDGE_HUB'] == 'off'
 
 
+@pytest.mark.parametrize('field', ['model', 'effort'])
+@pytest.mark.parametrize('value', ['', '--dir=/', 'not-allowlisted', 'x' * 101, 'x\n', 'x y', 'x"'])
+async def test_remote_selection_rejected_before_dispatch(gateway, field, value):
+    client, registry, scope, _ = gateway
+    response = await client.post('/v1/tasks', json=payload(**{field: value}))
+    assert response.status_code == 400
+    assert not scope.owned_tasks and scope.calls == 0
+    assert len(registry.tasks) == 1
+
+
+async def test_remote_selection_allowlists(gateway):
+    client, registry, _, _ = gateway
+    agent = registry.config.get('fake')
+    agent.remote_allowed_models = ['provider/model:v1@latest']
+    agent.remote_allowed_efforts = ['high']
+    response = await client.post('/v1/tasks', json=payload(model='provider/model:v1@latest', effort='high'))
+    assert response.status_code == 200
+    task = registry.tasks[response.json()['task_id']]
+    assert task.model == 'provider/model:v1@latest' and task.effort == 'high'
+
+
+@pytest.mark.parametrize('field', ['remote_allowed_models', 'remote_allowed_efforts'])
+def test_remote_selection_allowlist_config_validation(field):
+    with pytest.raises(ValidationError):
+        AgentConfig(name='bad', protocol='fake', command=['fake'], **{field: ['--dir=/']})
+
+
 def test_remote_config_validation(tmp_path):
     for host in ['0.0.0.0', '::', 'public.example', '192.168.1.3']:
         with pytest.raises(ValidationError, match='loopback'):

@@ -40,6 +40,7 @@ from agent_bridge.models import (
     TaskStatus,
     iso,
     normalize_effort,
+    validate_selection,
 )
 from agent_bridge.paths import ensure_home, result_path, state_path, transcript_path
 from agent_bridge.persist import (
@@ -739,6 +740,8 @@ class Registry:
     ) -> dict:
         if not self.dispatch_enabled:
             raise RuntimeError(NESTED_DISPATCH_ERROR)
+        validate_selection(model, 'model')
+        validate_selection(effort, 'effort')
         caller_task = self._busy_task(caller_session_id) if caller_session_id else None
         if caller_session_id and caller_session_id not in self.sessions:
             raise ValueError('unknown caller session')

@@ -38,3 +38,13 @@ Claude/OpenCode CLI presets) unless that agent explicitly sets
 `remote_allow_unsafe_permissions = true`. This opt-in emits a warning and does
 not create a sandbox. Same-user workers can read the owner's keyring; use a
 separate OS user or container for remote-origin execution.
+
+## CLI input boundaries
+
+CLI prompts use stdin or a standalone positional argument after `--`; custom
+unprotected `{prompt}` templates are rejected. Model/effort selections are
+restricted to 1–100 characters matching
+`^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]{0,99}$`. Remote callers additionally need
+the exact selection in the agent's `remote_allowed_models` or
+`remote_allowed_efforts` list (empty by default). These guards prevent option
+injection; they do not constrain what tools an agent can execute.
