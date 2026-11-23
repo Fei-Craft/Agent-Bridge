@@ -580,6 +580,11 @@ async def test_list_models_route(hub, tmp_path, monkeypatch):
     discover_models.assert_awaited_once_with('kimi', str(tmp_path), refresh=True)
     assert (await client.get('/v1/agents/kimi/models?cwd=/x&refresh=yes')).status_code == 400
     assert (await client.get('/v1/agents/kimi/models', headers={'Authorization': ''})).status_code == 401
+    worker = {'Authorization': 'Bearer ' + registry.worker_tokens.issue('worker-session')}
+    registry.worker_tokens.active.add('worker-session')
+    denied = await client.get('/v1/agents/kimi/models', params={'cwd': str(tmp_path)}, headers=worker)
+    assert denied.status_code == 403 and 'worker token cannot access this tool' in denied.json()['error']
+    discover_models.assert_awaited_once()
 
     app = client._transport.app
     real_client = httpx2.AsyncClient
