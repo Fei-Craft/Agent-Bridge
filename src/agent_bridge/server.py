@@ -77,6 +77,9 @@ INSTRUCTIONS = (
     "or end_session. When "
     "dispatch_enabled is true and the user states a lasting preference, "
     "persist it with set_preferences."
+    " Use list_models(agent, cwd) to discover model IDs before choosing one; "
+    "list_agents.model_discovery describes support. See the tool description "
+    "for result semantics and eligibility."
 )
 
 mcp = MCPServer[Registry | HubClient]("agent-bridge", instructions=INSTRUCTIONS, lifespan=lifespan)
@@ -101,6 +104,15 @@ def _registry(ctx: Context) -> Registry:
 async def list_agents(ctx: Context) -> dict[str, Any]:
     """List configured workers, the reconstructed host/proxy environment, and the coordinator policy (mode, instructions, runtime_context, dispatch_enabled). Call this first. Each agents[] row also carries quota: status ok | exhausted | unknown, windows[] with remaining_percent / resets_at / resets_in_sec, optional balance when reported by the provider, cached / stale flags, and detail. unknown means the quota could not be read (unsupported CLI, API-key login, timeout) — not that it is empty. Custom API/auth endpoints are unsupported; cached readings expire at window reset. Quota never affects available; treat it as information, routing still follows coordinator.instructions. Claude status covers shared 5h/weekly limits only: before dispatch, check the requested model's weekly:opus or weekly:sonnet remaining_percent even if status is ok. Zero means that model is exhausted; report its reset time or use an alternative allowed by coordinator.instructions. Missing or null readings mean unknown; model-specific windows alone cannot establish shared status. If dispatch_enabled is false, this is a nested worker-inherited instance — do not dispatch or set_preferences."""
     return await _service(ctx).list_agents()
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_models(ctx: Context, agent: str, cwd: str, refresh: bool = False) -> dict[str, Any]:
+    """List models advertised by a supported worker. Pass this conversation's absolute project directory as cwd. Results are cached per worker/project for one hour by default ([models] cache_sec); refresh=true requests an immediate update. default_model reports the query session's advertised default. supported_efforts reports worker-native levels: null means unknown, [] means explicitly no levels. For dispatch_task.effort, use off|low|medium|high|max for adapter mapping. Available when coordinator.dispatch_enabled=true."""
+    try:
+        return {"ok": True, **await _registry(ctx).list_models(agent, cwd, refresh=refresh)}
+    except Exception as exc:
+        return _error(exc)
 
 
 @mcp.tool()
