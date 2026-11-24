@@ -213,16 +213,53 @@ async def test_kimi_managed_api_key_provider_cannot_use_oauth_quota(tmp_path, mo
     assert status.status == "unknown" and "API-key" in (status.detail or "")
 
 
-def test_kimi_default_oauth_provider_remains_supported(tmp_path):
+def write_kimi_oauth_config(tmp_path, *, storage, key):
     home = tmp_path / ".kimi-code"
     home.mkdir()
     (home / "config.toml").write_text(
         'default_model="kimi-code/k3"\n[models."kimi-code/k3"]\nprovider="managed:kimi-code"\n'
         '[providers."managed:kimi-code"]\ntype="kimi"\nbase_url="https://api.kimi.com/coding/v1"\n'
-        'api_key=""\n[providers."managed:kimi-code".oauth]\nstorage="file"\nkey="kimi-code"',
+        'api_key=""\n[providers."managed:kimi-code".oauth]\n'
+        f'storage="{storage}"\nkey="{key}"',
         encoding="utf-8",
     )
-    assert quota_block_reason(cfg("kimi"), {}) is None
+    return home
+
+
+@pytest.mark.parametrize("key", ["kimi-code", "oauth/kimi-code"])
+async def test_kimi_default_file_oauth_slots_use_official_quota(tmp_path, monkeypatch, key):
+    home = write_kimi_oauth_config(tmp_path, storage="file", key=key)
+    credentials = home / "credentials"
+    credentials.mkdir()
+    (credentials / "kimi-code.json").write_text(json.dumps({"access_token": "test-token"}), encoding="utf-8")
+
+    async def fake_get(url, *, headers, env, timeout):
+        assert url == "https://api.kimi.com/coding/v1/usages"
+        assert headers == {"Authorization": "Bearer test-token"}
+        return {"usages": {"limit_7d": {"used_ratio": 0.25}}}
+
+    monkeypatch.setattr("agent_bridge.quota_kimi.get_json", fake_get)
+    status = await fetch_kimi_quota(cfg("kimi"), {})
+    assert status.status == "ok", status.detail
+    assert status.windows[0].remaining_percent == 75
+
+
+@pytest.mark.parametrize(("storage", "key"), [
+    ("file", "oauth/kimi-code-env-0123456789abcdef"),
+    ("file", "other/kimi-code"),
+    ("keyring", "oauth/kimi-code"),
+])
+async def test_kimi_non_default_oauth_slots_cannot_use_quota(tmp_path, monkeypatch, storage, key):
+    write_kimi_oauth_config(tmp_path, storage=storage, key=key)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("non-default OAuth slots must not read credentials or issue quota HTTP")
+
+    monkeypatch.setattr("agent_bridge.quota_kimi.kimi_access_token", forbidden)
+    monkeypatch.setattr("agent_bridge.quota_kimi.get_json", forbidden)
+    status = await fetch_kimi_quota(cfg("kimi"), {})
+    assert status.status == "unknown"
+    assert "non-default Kimi OAuth credential slot" in (status.detail or "")
 
 
 @pytest.mark.parametrize("change", [
