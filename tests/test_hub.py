@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import types
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -22,6 +23,8 @@ from agent_bridge.adapters.fake import FakeAdapter
 from agent_bridge.config import AgentConfig, CliConfig, EnvConfig, load_config
 from agent_bridge.hub import create_app, serve, validate_host
 from agent_bridge.hub_client import HubClient, discover
+from agent_bridge.models import Session, TurnResult
+from agent_bridge.native_search import observe_codex_search
 from agent_bridge.registry import Registry
 from agent_bridge.worker_env import build_worker_env, enforce_env_deny, hub_worker_context
 
@@ -132,7 +135,7 @@ async def test_worker_cannot_use_owner_callback_secret(worker, tmp_path, route):
     assert registry.tasks[response.json()['task_id']].callback_signed
 
 
-@pytest.mark.parametrize('route', ['/v1/tasks', '/v1/agents/fake/invoke'])
+@pytest.mark.parametrize('route', ['/v1/tasks', '/v1/agents/fake/invoke', '/v1/capabilities'])
 async def test_worker_turn_ends_while_reading_body(worker, tmp_path, monkeypatch, route):
     client, registry, root, env = worker
     authenticated = asyncio.Event()
@@ -146,11 +149,15 @@ async def test_worker_turn_ends_while_reading_body(worker, tmp_path, monkeypatch
 
     monkeypatch.setattr(registry.worker_tokens, 'authenticate', check)
     before = set(registry.tasks)
+    payload = {'agent': 'fake', 'message': 'late child', 'cwd': str(tmp_path)}
+    if route == '/v1/capabilities':
+        payload = {'agent': 'codex', 'capability': 'search', 'prompt': 'Search', 'cwd': str(tmp_path),
+                   'request_id': str(uuid.uuid4())}
 
     async def body():
         await asyncio.wait_for(authenticated.wait(), 5)
         registry.worker_tokens.active.discard(root['session_id'])
-        yield json.dumps({'agent': 'fake', 'message': 'late child', 'cwd': str(tmp_path)}).encode()
+        yield json.dumps(payload).encode()
 
     response = await client.post(route, content=body(), headers={'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + env['AGENT_BRIDGE_HUB_TOKEN']})
@@ -306,6 +313,77 @@ async def test_hub_client_does_not_send_caller_header(monkeypatch):
     monkeypatch.setenv('AGENT_BRIDGE_CALLER_SESSION', 'forged')
     monkeypatch.setattr(httpx2, 'AsyncClient', lambda **kwargs: original(transport=httpx2.MockTransport(handle), **kwargs))
     assert (await HubClient('http://hub', 'abw_' + 'h' * 43).call('list_agents'))['ok']
+
+
+async def test_native_search_auth_depth_and_mcp_proxy(hub, tmp_path, monkeypatch):
+    client, registry = hub
+    registry.config.agents["codex"] = AgentConfig(name="codex", protocol="codex", command=["unused"])
+
+    async def turn(self, session, task):
+        env = build_worker_env(worker_context=True, log_fill=False)
+        assert env["AGENT_BRIDGE_HUB"] == "off"
+        assert "AGENT_BRIDGE_HUB_TOKEN" not in env
+        observe_codex_search(task, {
+            "id": "web", "action": {"type": "search"},
+            "results": [{"type": "text_result", "url": "https://example.org/"}],
+        })
+        return TurnResult(text="Native result", native_session_id="native-thread")
+
+    monkeypatch.setattr("agent_bridge.adapters.codex.CodexAdapter.run_turn", turn)
+    body = dict(agent="codex", capability="search", prompt="Search", cwd=str(tmp_path),
+                request_id=str(uuid.uuid4()), user_requested=True)
+    assert (await client.post("/v1/capabilities", json=body, headers={"Authorization": ""})).status_code == 401
+    registry.worker_tokens.active.update({"unknown", "test-root", "test-peer"})
+    orphan_token = registry.worker_tokens.issue("unknown")
+    assert (await client.post("/v1/capabilities", json=body, headers={
+        "Authorization": f"Bearer {orphan_token}",
+    })).json()["error"].endswith("unknown caller session")
+    assert not (await client.post("/v1/capabilities", json=body | {"user_requested": "false"})).json()["ok"]
+    assert not (await client.post("/v1/capabilities", json=body | {"capability": "image"})).json()["ok"]
+    assert not (await client.post("/v1/capabilities", json=body | {"agent": "opencode"})).json()["ok"]
+    root = Session(session_id="test-root", agent="fake", cwd=str(tmp_path))
+    peer = Session(session_id="test-peer", agent="fake", cwd=str(tmp_path), call_depth=1)
+    registry.sessions.update({root.session_id: root, peer.session_id: peer})
+    root_token = registry.worker_tokens.issue(root.session_id)
+    peer_token = registry.worker_tokens.issue(peer.session_id)
+    response = await client.post("/v1/capabilities", json=body | {"callback_secret_name": "owner"},
+                                 headers={"Authorization": f"Bearer {root_token}"})
+    assert response.status_code == 403 and "admin-only" in response.json()["error"]
+    peer_headers = {"Authorization": f"Bearer {peer_token}", "X-Agent-Bridge-Caller": root.session_id}
+    response = await client.post("/v1/capabilities", json=body, headers=peer_headers)
+    assert response.status_code == 400 and "max_depth" in response.json()["error"]
+    assert not registry.tasks
+
+    original_client = httpx2.AsyncClient
+    monkeypatch.setattr(httpx2, "AsyncClient", lambda **kwargs: original_client(transport=client._transport, **kwargs))
+    backend = HubClient("http://hub", root_token)
+    backend.host_manual_mode = True
+    ctx = types.SimpleNamespace(request_context=types.SimpleNamespace(lifespan_context=backend))
+    blocked = await server.call_capability(ctx, **(body | {"user_requested": False}))
+    assert not blocked["ok"] and "manual" in blocked["error"]
+    assert not registry.tasks
+    call = await server.call_capability(ctx, **body)
+    result = await server.get_capability_result(ctx, call["call_id"], wait_sec=5, max_chars=6)
+    assert result["ok"] and not result["pending"] and result["status"] == "completed"
+    assert result["sources"][0]["url"] == "https://example.org/"
+    assert result["result_text"] == "Native" and result["has_more"]
+    task = registry.tasks[call["call_id"]]
+    assert task.call_depth == 1 and task.caller_session_id == root.session_id
+    assert "session_id" not in call and "session_id" not in result
+    path = f"/v1/capabilities/{task.task_id}"
+    assert (await client.get(path + "/result", headers={"Authorization": ""})).status_code == 401
+    assert (await client.post(path + "/cancel", headers={"Authorization": ""})).status_code == 401
+    assert (await client.get(path + "/result", headers=peer_headers)).status_code == 403
+    assert (await client.post(path + "/cancel", headers=peer_headers)).status_code == 403
+    peer.call_depth = 0
+    followup = body | {"request_id": str(uuid.uuid4()), "previous_call_id": task.task_id}
+    denied = await client.post("/v1/capabilities", json=followup, headers=peer_headers)
+    assert denied.status_code == 400 and "session is not owned by caller" in denied.json()["error"]
+    continued = await server.call_capability(ctx, **followup)
+    assert continued["ok"]
+    assert (await server.get_capability_result(ctx, continued["call_id"], wait_sec=5))["status"] == "completed"
+    assert (await server.cancel_capability(ctx, task.task_id))["remote_cancellation_supported"] is False
+    assert (await server.call_capability(ctx, **body))["reused"]
 
 
 async def test_lifecycle_cleanup(bridge_home):

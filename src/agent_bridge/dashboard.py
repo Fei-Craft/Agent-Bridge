@@ -130,7 +130,7 @@ class Dashboard:
                             continue
             return JSONResponse(redact({'ok': True,
                 'tasks': [task.model_dump(mode='json', include={'task_id', 'session_id', 'agent', 'status',
-                    'message', 'created_at', 'caller_delivery', 'callback_delivery'})
+                    'message', 'created_at', 'caller_delivery', 'callback_delivery', 'native_search'})
                     for task in sorted(self.registry.tasks.values(), key=lambda t: t.created_at, reverse=True)][:500],
                 'remote': {'enabled': remote.enabled, 'public_url': remote.public_url,
                     'agents': remote.remote_callable_agents,

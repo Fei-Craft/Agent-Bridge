@@ -103,7 +103,8 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
             if not owner and caller is None:
                 return JSONResponse(_error(PermissionError('invalid bearer token')), status_code=401)
             if caller is not None and tool not in {'health', 'list_agents', 'dispatch_task', 'invoke',
-                    'check_task', 'wait_task', 'get_result', 'get_transcript', 'cancel_task'}:
+                    'check_task', 'wait_task', 'get_result', 'get_transcript', 'cancel_task',
+                    'call_capability', 'get_capability_result', 'cancel_capability'}:
                 return JSONResponse(_error(PermissionError('worker token cannot access this tool')), status_code=403)
             if tool == 'health':
                 return JSONResponse({'ok': True})
@@ -123,8 +124,10 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                 if caller is not None:
                     if args.get('callback_secret_name') is not None:
                         return JSONResponse(_error(PermissionError('callback_secret_name is admin-only')), status_code=403)
-                    if tool in {'check_task', 'wait_task', 'get_result', 'cancel_task'}:
-                        task = registry.tasks.get(args.get('task_id', ''))
+                    if tool in {'check_task', 'wait_task', 'get_result', 'cancel_task',
+                                'get_capability_result', 'cancel_capability'}:
+                        key = 'call_id' if tool in {'get_capability_result', 'cancel_capability'} else 'task_id'
+                        task = registry.tasks.get(args.get(key, ''))
                         if task is None or task.caller_session_id != caller:
                             return JSONResponse(_error(PermissionError('task is not owned by caller')), status_code=403)
                     if tool == 'get_transcript' or (tool in {'dispatch_task', 'invoke'} and args.get('session_id')):
@@ -137,20 +140,23 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                 for key in ('cursor', 'max_chars', 'offset', 'limit'):
                     if key in args:
                         args[key] = int(args[key])
-                if 'timeout_sec' in args:
-                    args['timeout_sec'] = float(args['timeout_sec'])
+                for key in ('timeout_sec', 'wait_sec'):
+                    if key in args:
+                        args[key] = float(args[key])
                 if 'active_only' in args:
                     if args['active_only'] not in ('true', 'false'):
                         raise ValueError('active_only must be true or false')
                     args['active_only'] = args['active_only'] == 'true'
                 depth = 0
-                if caller and tool in ('dispatch_task', 'invoke'):
-                    if caller not in registry.sessions:
-                        raise ValueError('unknown caller session')
+                if caller and caller not in registry.sessions and tool in (
+                    'dispatch_task', 'invoke', 'call_capability', 'get_capability_result', 'cancel_capability',
+                ):
+                    raise ValueError('unknown caller session')
+                if caller and tool in ('dispatch_task', 'invoke', 'call_capability'):
                     if args.get('session_id') == caller:
                         raise ValueError('cannot dispatch into caller session')
                     caller_task = registry._busy_task(caller)
-                    if caller_task and caller_task.notification_source_task_id:
+                    if tool != 'call_capability' and caller_task and caller_task.notification_source_task_id:
                         args['notify_caller'] = False
                         args.pop('callback_url', None)
                         args.pop('callback_secret_name', None)

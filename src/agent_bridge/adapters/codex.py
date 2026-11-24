@@ -21,6 +21,7 @@ from agent_bridge.codex_exec import (
 )
 from agent_bridge.diagnostics import redact_diagnostic
 from agent_bridge.models import Session, Task, TurnResult
+from agent_bridge.native_search import observe_codex_search
 from agent_bridge.processes import (
     drop_pid,
     interrupt_then_reap,
@@ -62,7 +63,10 @@ class CodexAdapter(Adapter):
             effort=task.effort or session.effort,
             resume_id=session.native_session_id,
             yolo=yolo_requested(self.agent.session_meta),
-            config_overrides=self.agent.config_overrides,
+            config_overrides=[
+                *self.agent.config_overrides,
+                *(['web_search="live"'] if task.native_search else []),
+            ],
         )
 
     async def _drain_stderr(self, proc: asyncio.subprocess.Process, session_id: str) -> str:
@@ -104,6 +108,15 @@ class CodexAdapter(Adapter):
                 proc.stdin.close()
 
     async def run_turn(self, session: Session, task: Task) -> TurnResult:
+        if task.previous_call_id and not session.native_session_id:
+            raise RuntimeError("native session is missing and cannot be resumed")
+        prompt = task.message
+        if task.native_search:
+            prompt = (
+                "Codex CLI may omit structured source URLs from search events. Use native page retrieval "
+                "to open at least one relevant result page before answering. A URL in the answer alone "
+                "is not native source evidence.\n\n" + prompt
+            )
         env = self._worker_env()
         cmd = self._build_cmd(session, task, env)
         env = self._enforce_spawn_env(env)
@@ -113,7 +126,7 @@ class CodexAdapter(Adapter):
         append_event(
             session.session_id,
             "prompt_sent",
-            {"text": task.message, "cmd": cmd[:8]},
+            {"text": prompt, "cmd": cmd[:8]},
             self.home,
         )
         proc = await asyncio.create_subprocess_exec(
@@ -145,7 +158,7 @@ class CodexAdapter(Adapter):
         observed_model = task.model or session.model
         observed_effort = codex_effort(task.effort or session.effort)
         try:
-            await self._write_prompt(proc, task.message)
+            await self._write_prompt(proc, prompt)
             assert proc.stdout is not None
             while True:
                 try:
@@ -172,6 +185,15 @@ class CodexAdapter(Adapter):
                 apply_codex_event(state, obj)
                 event = str(obj.get("type") or "")
                 event_type = "raw"
+                search_item = obj.get("item")
+                if (task.native_search and event in {"item.started", "item.updated", "item.completed"}
+                        and isinstance(search_item, dict) and search_item.get("type") == "web_search"):
+                    if event == "item.completed":
+                        observe_codex_search(task, search_item)
+                    append_event(session.session_id, "tool_call", {
+                        "native_search": True, "source_count": len(task.sources),
+                    }, self.home)
+                    continue
                 if event == "item.completed":
                     raw_item = obj.get("item")
                     item: dict[str, Any] = raw_item if isinstance(raw_item, dict) else {}
@@ -258,9 +280,10 @@ class CodexAdapter(Adapter):
                 stderr_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await stderr_task
-            self._procs.pop(session.session_id, None)
+            if not task.native_search or proc.returncode is not None:
+                self._procs.pop(session.session_id, None)
+                drop_pid(self.home, session.session_id)
             self._cancelled.discard(session.session_id)
-            drop_pid(self.home, session.session_id)
 
     async def cancel(self, session: Session) -> None:
         self._cancelled.add(session.session_id)
@@ -270,4 +293,9 @@ class CodexAdapter(Adapter):
 
     async def shutdown(self, session: Session) -> None:
         await self.cancel(session)
+        proc = self._procs.get(session.session_id)
+        if session.native_search and proc is not None:
+            if proc.returncode is None:
+                raise RuntimeError("native search worker is still running")
+            drop_pid(self.home, session.session_id)
         self._procs.pop(session.session_id, None)

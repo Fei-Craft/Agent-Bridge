@@ -57,6 +57,23 @@ Hub 启动的 worker 仍通过环境获得凭证。重启后找不到签名密�
 远程调用只能使用独立网关。这是可信本机用户的接口，不是沙箱；
 持有 token 即可操作所有 session、启动 CLI。不要暴露到公网，远程使用需 TLS 隧道与防火墙。
 
+## 原生网页搜索
+
+通过 MCP `call_capability` 或 Hub `POST /v1/capabilities` 启动搜索。传入
+`capability: "search"`、`agent`（Codex、Grok 或 MiniMax 对应的本地 CLI）、
+`prompt`、绝对 `cwd` 和 UUID `request_id`；手动模式下只有用户明确要求调用
+worker 时才传 `user_requested: true`。此接口不支持多媒体或云 worker。
+
+查询用 `get_capability_result` / `GET /v1/capabilities/{call_id}/result`，可传
+`wait_sec`（0–60）和分页参数。结果必须有原生搜索证据和可归因来源；
+`pending` 为真时继续查询同一个调用。请求失败或不确定时，用同一个 UUID
+和相同参数查询或重放，不会重新执行保留的调用。使用新 UUID 和 `previous_call_id`
+可续接同 agent、同工作区的最新成功搜索，但须等 worker 清理完成。
+`cancel_capability` / `POST /v1/capabilities/{call_id}/cancel` 只取消本地执行。
+这些路由只在需要 bearer token 的 Hub 上开放，不属于公网网关。Hub worker
+凭自己的会话令牌发起搜索，受调用深度限制，只能查询、取消或续接自己提交的搜索；
+执行原生搜索的 worker 本身不接收 Hub 令牌。
+
 ## 阻塞调用与异步回推
 
 `invoke` / `ask` 默认等到终态，不再有 180 秒上限；显式 `timeout_sec` /

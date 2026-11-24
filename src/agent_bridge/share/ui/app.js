@@ -170,6 +170,11 @@ function renderMetadata(data) {
 }
 async function loadTranscript() {
   if (!selected) return;
+  if (selected.native_search) {
+    $('transcript').textContent = '原生搜索的内部会话不显示记录。';
+    $('more-transcript').hidden = true;
+    return;
+  }
   const taskId = selected.task_id;
   const data = await api('/v1/sessions/' + selected.session_id + '/transcript?offset=' + transcriptOffset + '&limit=100');
   if (selected?.task_id !== taskId) return;
@@ -188,7 +193,7 @@ async function loadResult(append = false) {
   if (selected?.task_id !== taskId) return;
   renderMetadata(data);
   if (append) $('result').textContent += data.result_text || '';
-  else $('result').textContent = data.result_text || data.error || '任务尚未产生结果';
+  else $('result').textContent = data.result_text || (data.error ? '' : '任务尚未产生结果');
   resultCursor = data.next_cursor || 0;
   $('more-result').hidden = !data.has_more;
 }

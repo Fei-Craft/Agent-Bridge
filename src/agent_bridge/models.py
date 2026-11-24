@@ -102,6 +102,7 @@ def grok_effort(effort: str | None) -> str | None:
 
 
 class Session(BaseModel):
+    native_search: bool = False
     caller_session_id: str | None = None
     remote_origin: bool = False
     call_depth: int = 0
@@ -135,7 +136,20 @@ class TaskFailure(BaseModel):
     stderr_summary: str | None = None
 
 
+class SourceReference(BaseModel):
+    title: str
+    url: str
+    snippet: str | None = None
+    tool_call_id: str
+
+
 class Task(BaseModel):
+    native_search: bool = False
+    request_id: str | None = None
+    previous_call_id: str | None = None
+    search_finalized: bool = False
+    sources: list[SourceReference] = Field(default_factory=list)
+    native_calls: dict[str, str] = Field(default_factory=dict)
     call_depth: int = 0
     caller_session_id: str | None = None
     notify_caller: bool = False

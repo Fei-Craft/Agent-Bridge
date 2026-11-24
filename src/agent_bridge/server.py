@@ -204,6 +204,35 @@ async def cancel_task(ctx: Context, task_id: str) -> dict[str, Any]:
     return await _service(ctx).cancel_task(task_id=task_id)
 
 
+@mcp.tool()
+async def call_capability(
+    ctx: Context, agent: str, capability: str, prompt: str, cwd: str, request_id: str,
+    model: str | None = None, effort: str | None = None, user_requested: bool = False,
+    previous_call_id: str | None = None,
+) -> dict[str, Any]:
+    """Start native search with Codex, Grok, or MiniMax. Provide an absolute cwd and a UUID; reuse that UUID with identical arguments when the outcome is uncertain. Set user_requested only if the user explicitly requested a worker. previous_call_id continues a finalized successful search."""
+    return await _service(ctx).call_capability(
+        agent=agent, capability=capability, prompt=prompt, cwd=cwd, request_id=request_id,
+        model=model, effort=effort, user_requested=user_requested, previous_call_id=previous_call_id,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_capability_result(
+    ctx: Context, call_id: str, wait_sec: float = 0, cursor: int = 0, max_chars: int = RESULT_PAGE_MAX_CHARS,
+) -> dict[str, Any]:
+    """Read the search result and native sources. Poll while pending, including during worker cleanup; use next_cursor for additional text."""
+    return await _service(ctx).get_capability_result(
+        call_id=call_id, wait_sec=wait_sec, cursor=cursor, max_chars=max_chars,
+    )
+
+
+@mcp.tool()
+async def cancel_capability(ctx: Context, call_id: str) -> dict[str, Any]:
+    """Cancel the local native search worker. This does not confirm remote provider cancellation."""
+    return await _service(ctx).cancel_capability(call_id=call_id)
+
+
 @mcp.tool(annotations=READ_ONLY)
 async def list_sessions(ctx: Context, active_only: bool = False) -> dict[str, Any]:
     """List sessions owned by this Bridge instance and report live siblings."""

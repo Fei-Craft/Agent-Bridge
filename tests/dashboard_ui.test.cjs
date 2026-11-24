@@ -74,6 +74,33 @@ test('metadata renders labeled values and pills, hiding empty remote/file fields
   assert.match(get('detail-meta').textContent, /变更文件app.js/);
   assert.match(get('detail-meta').textContent, /错误执行失败/);
 });
+test('native search detail shows partial results and errors without reading internal transcripts', async () => {
+  const {run, get, context} = setup();
+  const result = {ok: true, task_id: 'task_search', agent: 'codex', status: 'failed',
+    error: 'Search requires attributable sources.'};
+  const requests = [];
+  context.fetch = async url => {
+    requests.push(url);
+    const body = {
+      '/v1/tasks/task_search/result?cursor=0': {...result, result_text: 'Partial findings', next_cursor: 16, has_more: true},
+      '/v1/tasks/task_search/result?cursor=16': {...result, result_text: ' with details'},
+      '/ui/data': {ok: true, tasks: [], audit: [], approvals: [], remote: {agents: [], workspaces: {}}},
+      '/v1/sessions': {ok: true, sessions: []},
+    }[url];
+    assert.ok(body, 'Unexpected request: ' + url);
+    return {ok: true, json: async () => body};
+  };
+  await run("openTask({task_id:'task_search',session_id:'sess_search',native_search:true})");
+  assert.equal(get('result').textContent, 'Partial findings');
+  assert.match(get('detail-meta').textContent, /Search requires attributable sources/);
+  assert.equal(get('more-transcript').hidden, true);
+  await run('loadResult(true)');
+  assert.equal(get('result').textContent, 'Partial findings with details');
+  assert.match(get('detail-meta').textContent, /Search requires attributable sources/);
+  await run('authenticated = true; refresh()');
+  assert.equal(requests.filter(url => url.endsWith('cursor=0')).length, 2);
+  assert.equal(requests.some(url => url.includes('/transcript')), false);
+});
 test('gateway uses workspace list, audit columns and outcome pills instead of JSON', () => {
   const {run, get} = setup();
   run(`snapshot.remote={enabled:true,require_approval:true,public_url:'',agents:['fake'],workspaces:{project:'/repo'}};

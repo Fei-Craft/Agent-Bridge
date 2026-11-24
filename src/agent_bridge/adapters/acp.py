@@ -41,6 +41,7 @@ from agent_bridge.minimax_meta import (
     resolve_minimax_model,
 )
 from agent_bridge.models import Session, Task, TaskFailure, TurnResult, dsh_effort, grok_effort
+from agent_bridge.native_search import AcpNativeSearch
 from agent_bridge.opencode_meta import resolve_opencode_effort
 from agent_bridge.processes import (
     drop_pid,
@@ -521,12 +522,26 @@ class _BridgeClient:
         self.files: set[str] = set()
         self.usage: dict[str, Any] = {}
         self.tool_kinds: dict[str, str] = {}
+        self.native_search: AcpNativeSearch | None = None
 
     def reset_turn(self) -> None:
         self.text_parts = []
         self.files = set()
         self.usage = {}
         self.tool_kinds = {}
+
+    def observe_native_message(self, event: Any) -> None:
+        search = self.native_search
+        if search is None or str(getattr(event.direction, "value", event.direction)) != "incoming":
+            return
+        message = event.message
+        if not isinstance(message, dict) or message.get("method") != "session/update":
+            return
+        params = message.get("params")
+        if isinstance(params, dict) and params.get("sessionId") == search.native_id:
+            update = params.get("update")
+            if isinstance(update, dict) and update.get("sessionUpdate") in {"tool_call", "tool_call_update"}:
+                search.tool_name(update)
 
     async def request_permission(
         self,
@@ -558,6 +573,13 @@ class _BridgeClient:
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
         dumped = _dump(update)
         type_name = type(update).__name__
+        search = self.native_search
+        if search and session_id == search.native_id and isinstance(dumped, dict) and (name := search.consume(dumped)):
+            append_event(self.session_id, dumped.get("sessionUpdate", "tool_call"), {
+                "tool_name": name, "status": dumped.get("status"),
+                "source_count": len(search.task.sources),
+            }, self.home)
+            return
         text = ""
         event_type = "raw"
         if type_name == "AgentMessageChunk":
@@ -898,7 +920,7 @@ class AcpAdapter(Adapter):
         live.client = _BridgeClient(
             session.session_id, self.home, self.agent.permission_policy
         )
-        live.conn = connect_to_agent(live.client, proc.stdin, proc.stdout)
+        live.conn = connect_to_agent(live.client, proc.stdin, proc.stdout, observers=[live.client.observe_native_message])
         live.stderr_task = asyncio.create_task(
             self._drain_stderr(proc, session.session_id, live)
         )
@@ -1625,7 +1647,9 @@ class AcpAdapter(Adapter):
             current_effort, _offered = config_option_values(live.config_options, "reasoning_effort")
             live.applied_effort = current_effort or None
 
-    async def ensure_session(self, session: Session) -> None:
+    async def ensure_session(self, session: Session, *, strict_resume: bool = False) -> None:
+        if strict_resume and not session.native_session_id:
+            raise RuntimeError("native session is missing and cannot be resumed")
         live = self._live.get(session.session_id)
         if (
             live
@@ -1672,12 +1696,18 @@ class AcpAdapter(Adapter):
             except AcpUnavailableError:
                 raise
             except Exception as exc:
+                if strict_resume:
+                    if isinstance(exc, AcpError):
+                        raise
+                    raise RuntimeError("native session could not be resumed") from None
                 log.warning("session/load failed for %s; creating a new session: %s", session.session_id, _redact_diagnostic(str(exc)))
                 load_failure = exc
             else:
                 self._remember_config_options(live, revived)
                 await self._sync_selection(live, session)
                 return
+        if strict_resume:
+            raise RuntimeError("native session could not be resumed")
         created = await self._rpc(
             self._call_new_session(live.conn, session.cwd, self._new_session_meta(session)),
             "session/new",
@@ -1719,12 +1749,17 @@ class AcpAdapter(Adapter):
         if live is not None:
             live.stderr_tail = ""
         try:
-            await self.ensure_session(session)
+            if task.previous_call_id:
+                await self.ensure_session(session, strict_resume=True)
+            else:
+                await self.ensure_session(session)
         except Exception as exc:
             raise self._failure(exc, "process_start", session) from None
         live = self._live[session.session_id]
         assert live.conn is not None and live.client is not None
         live.client.reset_turn()
+        if task.native_search:
+            live.client.native_search = AcpNativeSearch(task, session.native_session_id)
         warnings: list[str] = live.pending_warnings
         live.pending_warnings = []
         if self.agent.name not in _MODEL_EFFORT_AGENTS and (task.model or task.effort):
@@ -1758,6 +1793,7 @@ class AcpAdapter(Adapter):
             ) from None
         finally:
             live.prompt_task = None
+            live.client.native_search = None
         stop = getattr(response, "stop_reason", None) or "end_turn"
         if hasattr(stop, "value"):
             stop = stop.value
@@ -1803,7 +1839,10 @@ class AcpAdapter(Adapter):
     async def shutdown(self, session: Session) -> None:
         if self.worker_tokens is not None:
             self.worker_tokens.revoke(session.session_id)
-        live = self._live.pop(session.session_id, None)
+        live = (
+            self._live.get(session.session_id) if session.native_search
+            else self._live.pop(session.session_id, None)
+        )
         if live is None:
             drop_pid(self.home, session.session_id)
             session.pid = None
@@ -1813,10 +1852,13 @@ class AcpAdapter(Adapter):
                 await asyncio.wait_for(live.conn.close(), timeout=2)
         if live.proc is not None:
             await reap_subprocess(live.proc)
+            if session.native_search and live.proc.returncode is None:
+                raise RuntimeError("native search worker is still running")
         if live.stderr_task is not None:
             if not live.stderr_task.done():
                 live.stderr_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await live.stderr_task
+        self._live.pop(session.session_id, None)
         drop_pid(self.home, session.session_id)
         session.pid = None

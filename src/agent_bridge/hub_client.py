@@ -30,6 +30,9 @@ ROUTES = {
     'wait_task': ('GET', '/v1/tasks/{task_id}/wait', 'task_id'),
     'get_result': ('GET', '/v1/tasks/{task_id}/result', 'task_id'),
     'cancel_task': ('POST', '/v1/tasks/{task_id}/cancel', 'task_id'),
+    'call_capability': ('POST', '/v1/capabilities', None),
+    'get_capability_result': ('GET', '/v1/capabilities/{call_id}/result', 'call_id'),
+    'cancel_capability': ('POST', '/v1/capabilities/{call_id}/cancel', 'call_id'),
     'list_sessions': ('GET', '/v1/sessions', None),
     'get_transcript': ('GET', '/v1/sessions/{session_id}/transcript', 'session_id'),
     'end_session': ('DELETE', '/v1/sessions/{session_id}', 'session_id'),
@@ -45,7 +48,7 @@ class HubClient:
 
     async def call(self, tool: str, **kwargs: Any) -> dict[str, Any]:
         try:
-            if self.host_manual_mode and tool in {'dispatch_task', 'invoke'} and not kwargs.get('user_requested'):
+            if self.host_manual_mode and tool in {'dispatch_task', 'invoke', 'call_capability'} and not kwargs.get('user_requested'):
                 raise RuntimeError('coordinator mode is manual: retry with user_requested=true only when the user explicitly requested a worker')
             return await self._call(tool, **kwargs)
         except Exception as exc:
