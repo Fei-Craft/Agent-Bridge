@@ -69,7 +69,7 @@ It does not drive GUIs. The user talks only to the coordinator.
 Need [uv](https://docs.astral.sh/uv/). Then:
 
 ```powershell
-uv tool install git+https://github.com/FeiZhuLulu/Agent-Bridge.git
+uv tool install git+https://github.com/Fei-Craft/Agent-Bridge.git
 ```
 
 ### Connect Codex
@@ -265,7 +265,7 @@ Agent Bridge 是一个联通各个本地 Agent 的连接器。由协调者——
 先装 [uv](https://docs.astral.sh/uv/)，然后：
 
 ```powershell
-uv tool install git+https://github.com/FeiZhuLulu/Agent-Bridge.git
+uv tool install git+https://github.com/Fei-Craft/Agent-Bridge.git
 ```
 
 ### 接到 Codex
@@ -406,4 +406,4 @@ uv run pytest
 
 ## License
 
-[MIT](LICENSE) © FeiZhuLulu
+[MIT](LICENSE) © Fei2411

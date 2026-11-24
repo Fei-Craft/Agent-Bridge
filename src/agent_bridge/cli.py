@@ -22,7 +22,7 @@ from agent_bridge.worker_env import is_worker_context
 
 log = logging.getLogger(__name__)
 
-GIT_SOURCE = "git+https://github.com/FeiZhuLulu/Agent-Bridge.git"
+GIT_SOURCE = "git+https://github.com/Fei-Craft/Agent-Bridge.git"
 PACKAGE = "agent-bridge"
 
 SKILL_RELATIVE = (
