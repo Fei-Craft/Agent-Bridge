@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
+
+SELECTION_PATTERN = r'^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]{0,99}$'
+MODEL_PATTERN = r'^[A-Za-z0-9._:/@][A-Za-z0-9._:/@#\\-]{0,99}$'
+Selection = Annotated[str, Field(pattern=MODEL_PATTERN)]
+EffortSelection = Annotated[str, Field(pattern=SELECTION_PATTERN)]
+
+
+def validate_selection(value: str | None, name: str) -> None:
+    pattern = MODEL_PATTERN if name == 'model' else SELECTION_PATTERN
+    if value is not None and (not isinstance(value, str) or not re.fullmatch(pattern, value)):
+        raise ValueError(f'{name} must match {pattern}')
 
 
 def utcnow() -> datetime:
@@ -90,13 +102,20 @@ def grok_effort(effort: str | None) -> str | None:
 
 
 class Session(BaseModel):
+    caller_session_id: str | None = None
+    remote_origin: bool = False
+    call_depth: int = 0
+    notification_receipts: dict[str, str] = Field(default_factory=dict)
     session_id: str
     agent: str
     cwd: str
+    repo: str | None = None
+    ref: str | None = None
+    remote: dict[str, Any] = Field(default_factory=dict)
     native_session_id: str | None = None
     proc_state: ProcState = ProcState.idle_unloaded
-    model: str | None = None
-    effort: str | None = None
+    model: Selection | None = None
+    effort: EffortSelection | None = None
     title: str | None = None
     turns: int = 0
     created_at: str = Field(default_factory=iso)
@@ -117,13 +136,24 @@ class TaskFailure(BaseModel):
 
 
 class Task(BaseModel):
+    call_depth: int = 0
+    caller_session_id: str | None = None
+    notify_caller: bool = False
+    callback_url: str | None = None
+    callback_signed: bool = False
+    caller_delivery: dict[str, Any] = Field(default_factory=dict)
+    callback_delivery: dict[str, Any] = Field(default_factory=dict)
+    notification_source_task_id: str | None = None
     task_id: str
     session_id: str
     agent: str
     message: str
     cwd: str
-    model: str | None = None
-    effort: str | None = None
+    repo: str | None = None
+    ref: str | None = None
+    remote: dict[str, Any] = Field(default_factory=dict)
+    model: Selection | None = None
+    effort: EffortSelection | None = None
     observed_model: str | None = None
     observed_effort: str | None = None
     status: TaskStatus = TaskStatus.queued
@@ -156,6 +186,7 @@ class TranscriptEvent(BaseModel):
 
 
 class TurnResult(BaseModel):
+    remote: dict[str, Any] = Field(default_factory=dict)
     text: str = ""
     files_changed: list[str] = Field(default_factory=list)
     stop_reason: str = "end_turn"

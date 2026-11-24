@@ -10,6 +10,73 @@ uv tool install git+https://github.com/FeiZhuLulu/Agent-Bridge.git
 
 That is the whole install. Then register the MCP server in the coordinator. The first time a top-level host starts Bridge, the coordinator skill is written automatically (skipped if Bridge was inherited inside a worker); later starts rewrite it only after the bundled skill changed, so local edits survive restarts but not upgrades. Need [uv](https://docs.astral.sh/uv/) first.
 
+## Optional headless CLI workers
+
+ACP remains the default. To try a fresh subprocess per turn instead, add this to
+`~/.agent-bridge/agents.toml` (Windows: `%USERPROFILE%\.agent-bridge\agents.toml`):
+
+```toml
+[agents.opencode]
+protocol = "cli"
+```
+
+Restart the hub/local MCP server and start a new Bridge session. Set `protocol = "acp"`
+to switch back without repeating a command. OpenCode, Claude and Cursor have separate
+CLI presets under `[agents.NAME.cli]`; the ordinary `command` remains the ACP command.
+OpenCode uses `run --format json --auto`, Claude uses `-p --output-format stream-json`
+with verbose/partial events. These two presets' flags were checked against installed
+CLIs. Cursor uses `cursor-agent -p --output-format stream-json`; Cursor is not installed
+on the preparation machine, so verify its flags locally before use. No extra presets
+were guessed for other CLIs. Codex keeps its existing specialized `codex` protocol.
+
+**Permissions:** the OpenCode and Claude headless presets automatically approve tools
+(`--auto` / `--dangerously-skip-permissions`). Use only trusted projects. ACP's
+`permission_policy` does not govern CLI tools; configure their native flags instead.
+Cursor's preset does not force approval. Credentials are still the native CLI's
+environment/auth store; never embed a key in argv or configuration.
+
+For a new CLI, see the complete declarative example in `agents.toml.example`.
+`cli.command` optionally replaces the base `command` only for CLI mode. `extra_args`
+are followed by optional `resume_args`, `model_args`, `effort_args`, then `prompt_args`.
+Tokens support `{prompt}`, `{session}`, `{model}`, `{effort}`, `{cwd}`; escape literal
+braces as `{{` / `}}`. Each token remains one argv element, not shell code. For stdin
+prompts use `prompt_stdin = true` and `prompt_args = []`. Missing configured selection
+arguments are errors rather than silently ignoring a requested model/effort.
+Positional `{prompt}` must be a standalone token after `--`; unsafe custom
+templates now fail instead of treating leading prompt text as CLI options.
+Claude's preset sends text on stdin (`--input-format` defaults to text);
+OpenCode uses `--` before its message. Cursor also uses `--`, but that preset's
+compatibility remains unverified because cursor-agent is not installed here.
+
+Model/effort selections must match
+`^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]{0,99}$` (1–100 characters).
+Model IDs additionally allow non-leading `#` for MiniMax variants; effort does not.
+Remote requests may select only values explicitly listed under that agent's
+`remote_allowed_models` / `remote_allowed_efforts`; both default to empty lists.
+Omitting selections still uses the configured defaults. Local effort aliases
+and supported levels are unchanged, subject to this syntax validation.
+
+Parsers `claude`/`cursor` consume stream-json assistant/result/session events;
+`opencode` consumes run JSON text/tool/step/token events. `jsonl` accepts objects with
+`type`, `session_id`, `model`, `usage`; `text` or `delta` strings append output, a
+`type="result"` with `result` replaces the final output, and `type="error"` fails
+the turn. `text` streams plain stdout (including output without newlines) and is
+stateless: it cannot discover a native conversation ID. JSON parsers tolerate
+non-JSON diagnostic lines but reject output with no JSON object events.
+
+Native session IDs are persisted and substituted into `resume_args` for follow-ups.
+A configured resumable CLI that fails to emit an ID cannot silently start a new
+conversation on its next turn. Cancellation kills the process tree; Registry's
+stall/total-turn limits, workspace-diff file detection, transcripts and hub peer
+environment injection are shared with the other protocols. Observed model falls
+back to the requested selection when the CLI does not report it; it is not an
+independent upstream routing verification.
+
+中文：在用户配置中给对应 agent 设置 `protocol = "cli"` 即可尝试无头 CLI；
+改回 `"acp"` 恢复。重启 Hub/MCP 并新建 session，不要跨协议续接。
+OpenCode/Claude 预设会自动批准工具调用，仅用于可信项目；CLI 不使用 ACP 的权限策略。
+自定义 CLI 可通过配置声明参数、stdin 提示、解析器与原生 session 续接，无需改 Python。
+
 ## Resolve the Agent Bridge executable
 
 Hosts must launch a real executable. A PowerShell function named `agent-bridge` is not resolved by ZCode or Grok child processes.
@@ -573,6 +640,85 @@ Auth is `mcode login` under `~/.minimax` (`auth/<build>/<region>/auth.json`), or
 
 `dispatch_task.model` is `provider/model` or `provider/model#variant`, the same shape as `mcode exec --model`. Bridge encodes that into the ACP value the session actually advertises. An unknown slug fails the turn and lists the real `provider/model` options. `effort` maps onto that model's `thinkingEffort` (`default|low|medium|high|xhigh|max` is common; Bridge `off` → `default`). A model with no effort option, or an effort that will not map, comes back as a warning. `get_result.observed_model` / `observed_effort` are the last values Bridge successfully set after that mapping. Switching model on a live session re-applies effort. Bridge forces `permissionMode=bypassPermissions` after `session/new` (a fresh process starts in `default`, which asks). That option is not the session mode — `session/set_mode` is only `default` / `plan`, and Bridge leaves it on `default`. Revive uses `session/resume`: `session/load` replays the whole history.
 
+## Cloud API workers
+
+Use `protocol = "cloud"` with `[agents.NAME.cloud] provider = "cursor"` or
+`"devin"`; no `command` is required. Commented complete presets are in
+`agents.toml.example`. Run `agent-bridge secrets set cursor` / `set devin` for
+hidden entry into the OS keyring, then restart the hub. `secrets list` shows
+presence only; `secrets delete cursor` removes a key. `CURSOR_API_KEY` /
+`DEVIN_API_KEY` remain explicit environment fallbacks with a warning.
+Devin also requires `org_id` or `DEVIN_ORG_ID`. Hub tokens and callback signing
+secrets also use keyring, never plaintext files. If no secure backend is usable,
+secrets remain in RAM only: independent clients cannot authenticate from discovery,
+and signed callbacks fail after losing their secret on restart (never unsigned).
+See [secret storage](HUB.md#secret-storage), including legacy-file migration caveats.
+Never put a key in config or a URL. No network request is made by the probe.
+
+See [cloud setup and lifecycle](HUB.md#cloud-api-workers) for optional repo/ref,
+model/mode mapping, remote results, polling and cost controls. Cloud workers do
+not write to local cwd or inherit peer-call environment. Devin consumes ACUs;
+`max_acu_limit` can bound a session. **Cancel terminates Devin and prevents
+resume**; Cursor cancels a run and archives on end_session. Defaults are a
+disabled stall timeout and a 24-hour turn timeout, both configurable per agent.
+Hub/Registry shutdown and idle unload only detach locally, leaving remote work
+and billing intact. Explicitly cancel or end_session to stop cloud work.
+
 ## Permissions
+
+Use `agent-bridge callback-secret set NAME` to enter a signing secret (>=32
+characters), then send `callback_secret_name=NAME` via REST/MCP/call or
+`ask --callback-secret-name NAME`. `list`/`delete NAME` manage those keyring entries.
+Raw `callback_secret` values are rejected. `ask --callback-secret` prompts and uses
+an ephemeral reference, requiring a shared secure keyring.
+Callbacks must resolve exclusively to public HTTPS addresses; DNS is checked on
+dispatch/every send and connections are pinned with original TLS hostname verification.
+For local tests only, `[hub] allow_insecure_callbacks = true` permits loopback HTTP/HTTPS.
+Receivers must verify the timestamped signature described in HUB.md (reject >300s skew).
+
+The management listener accepts only loopback bind addresses. The old
+`--allow-remote` flag is rejected; never tunnel the admin listener.
+Hub discovery accepts only HTTP loopback (`127.0.0.0/8`, `::1`, `localhost`)
+or HTTPS URLs, without embedded credentials, query strings or fragments.
+
+Gateway `token_ttl_sec` defaults to 3600 seconds, not the cloud turn timeout.
+The bearer is included in cloud session history: treat provider history as
+credential-bearing data even though Bridge redacts its own persisted output.
+
+Remote execution requires approval by default (`hub.remote.require_approval=true`).
+Agents with permission-skipping argv/presets are rejected when remote is enabled,
+unless `[agents.NAME] remote_allow_unsafe_permissions=true` explicitly opts in
+(with a warning). This includes the bundled Claude/OpenCode CLI presets. Prefer
+removing unsafe flags and running remote workers under a separate OS user/container:
+same-user workers can still access the owner's keyring.
+
+The owner CLI/dashboard/coordinator keeps the admin hub bearer. Hub-launched
+local workers receive scoped `abw_` credentials instead: they can discover agents,
+call peers, and inspect/cancel their own child tasks, but cannot change preferences,
+approve remote calls, manage sessions or create dashboard logins. Caller identity
+and notification routing are bound to that credential; caller headers are ignored.
+`ask --async` detects the worker credential and defaults to caller notification.
+Admin callers must poll or use callbacks instead of `notify_caller`.
+
+Resident ACP credentials work only during active turns and are reused by the same
+process across follow-ups. Process exit, session closure and hub shutdown revoke
+them permanently; one-shot credentials expire at turn completion. No worker
+credential is written to Bridge state or discovery files. See [SECURITY.md](SECURITY.md)
+for the same-user/keyring boundary and the risk of token reuse during later turns.
+
+Cloud-to-local peer access is opt-in via `[hub.remote]`, a separate loopback
+listener with allowlisted agents and named absolute workspaces. See
+[gateway setup](HUB.md#opt-in-cloud-to-local-gateway) for scoped tokens, local
+approvals, `agent-bridge tunnel` and Cloudflare Access service-token headers.
+Never tunnel the admin port. The presence-only `require_cf_access` option is removed
+and rejected in config; enforce authentication at the Access edge. Workspaces are routing allowlists,
+not an OS sandbox; use isolated accounts/containers for untrusted cloud prompts.
+
+Access logs are disabled on both listeners. Gateway audit `remote_ip` behind a
+tunnel is usually loopback; forwarded CF IP headers are advisory and spoofable
+without trusted edge validation and a non-bypassable origin, not authentication.
+`agent-bridge ui` opens a URL whose single-use code lasts 60 seconds and may be
+visible in browser process arguments during that window. `--no-open` instead
+prints the sensitive link; do not record/share it. The admin bearer is never in it.
 
 Most worker CLIs run in always-approve / skip-permissions mode. Codex CLI defaults to `--approve-for-me` (auto review + workspace-write); `--yolo` is opt-in via `[agents.codex] session_meta = { yolo = true }`. Review is the coordinator's job: `git diff`, build, tests. Cap follow-up turns at three, then the coordinator patches the rest.

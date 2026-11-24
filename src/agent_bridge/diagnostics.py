@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import re
 
+from agent_bridge.secrets import redact
+
 _REDACT_LIMIT = 4096
 
 
 def redact_diagnostic(text: str) -> str:
+    text = redact(text)
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
     text = re.sub(r"(?im)^.*(?:authorization|(?:set-)?cookie)\s*[:=].*$", "[redacted]", text)
     text = re.sub(

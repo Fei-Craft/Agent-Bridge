@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import logging
 import os
 import re
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from agent_bridge.models import EffortSelection, Selection
 from agent_bridge.paths import bridge_home, bundled_agents_toml
 from agent_bridge.persist import atomic_write_text
 
@@ -105,10 +109,58 @@ DEFAULT_INHERIT_KEYS = (
 )
 
 
+def normalize_dsh_permission_mode(value: str) -> str:
+    return value.strip().casefold()
+
+
+class CliConfig(BaseModel):
+    command: list[str] = Field(default_factory=list)
+    prompt_args: list[str] = Field(default_factory=lambda: ['--', '{prompt}'])
+    prompt_stdin: bool = False
+    resume_args: list[str] = Field(default_factory=list)
+    model_args: list[str] = Field(default_factory=list)
+    effort_args: list[str] = Field(default_factory=list)
+    extra_args: list[str] = Field(default_factory=list)
+    parser: Literal['text', 'jsonl', 'claude', 'opencode', 'cursor'] = 'text'
+
+    @model_validator(mode='after')
+    def default_prompt_transport(self) -> CliConfig:
+        if self.prompt_stdin and 'prompt_args' not in self.model_fields_set:
+            self.prompt_args = []
+        return self
+
+
+class CloudConfig(BaseModel):
+    provider: Literal['cursor', 'devin']
+    api_key_env: str = ''
+    base_url: str = ''
+    org_id: str | None = None
+    org_id_env: str = 'DEVIN_ORG_ID'
+    repo: str | None = None
+    ref: str | None = None
+    auto_create_pr: bool = False
+    model: Selection | None = None
+    devin_mode: Selection | None = None
+    max_acu_limit: int | None = Field(default=None, gt=0)
+    poll_interval_sec: float = Field(default=5, gt=0)
+
+    @model_validator(mode='after')
+    def defaults(self) -> CloudConfig:
+        self.api_key_env = self.api_key_env or f'{self.provider.upper()}_API_KEY'
+        self.base_url = (self.base_url or {'cursor': 'https://api.cursor.com',
+                                         'devin': 'https://api.devin.ai'}[self.provider]).rstrip('/')
+        url = urlsplit(self.base_url)
+        if url.scheme not in {'http', 'https'} or not url.hostname or url.username or url.password or url.query or url.fragment:
+            raise ValueError('cloud base_url must be HTTP(S), without credentials, query or fragment')
+        return self
+
+
 class AgentConfig(BaseModel):
     name: str
     protocol: str
-    command: list[str]
+    command: list[str] = Field(default_factory=list)
+    cloud: CloudConfig | None = None
+    cli: CliConfig = Field(default_factory=CliConfig)
     fallback_commands: list[list[str]] = Field(default_factory=list)
     cwd: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
@@ -130,6 +182,35 @@ class AgentConfig(BaseModel):
     # key=value). No key validation, no filtering, user config.toml is
     # never read.
     config_overrides: list[str] = Field(default_factory=list)
+    remote_allow_unsafe_permissions: bool = False
+    remote_allowed_models: list[Selection] = Field(default_factory=list)
+    remote_allowed_efforts: list[EffortSelection] = Field(default_factory=list)
+
+    def unsafe_remote_permissions(self) -> bool:
+        argv = [*self.command, *(arg for cmd in self.fallback_commands for arg in cmd),
+                *self.cli.command, *self.cli.extra_args, *self.cli.resume_args,
+                *self.cli.model_args, *self.cli.effort_args, *self.cli.prompt_args]
+        unsafe = {'--dangerously-skip-permissions', '--auto', '--yolo', '--full-auto',
+                  '--dangerously-bypass-approvals-and-sandbox', '--force',
+                  '--allow-dangerously-skip-permissions'}
+        return (self.protocol == 'agy' or self.session_meta.get('yolo') in (True, 'true', 1)
+                or normalize_dsh_permission_mode(self.env.get('DSH_PERMISSION_MODE', '')) == 'danger-full-access'
+                or any(arg.split('=', 1)[0] in unsafe for arg in argv)
+                or any(value.strip('\"\'') in {'bypassPermissions', 'danger-full-access'}
+                       for arg in [*argv, *self.config_overrides] for value in arg.split('=')))
+
+    @model_validator(mode='after')
+    def validate_protocol(self) -> AgentConfig:
+        if self.protocol == 'cloud':
+            if self.cloud is None:
+                raise ValueError('cloud protocol requires a cloud configuration')
+            if 'stall_timeout_sec' not in self.model_fields_set:
+                self.stall_timeout_sec = 0
+            if 'turn_timeout_sec' not in self.model_fields_set:
+                self.turn_timeout_sec = 86400
+        elif not self.command:
+            raise ValueError('command is required for local agents')
+        return self
 
 
 class EnvConfig(BaseModel):
@@ -212,13 +293,82 @@ class CoordinatorConfig(BaseModel):
     instructions: str = ""
 
 
+class RemoteConfig(BaseModel):
+    enabled: bool = False
+    host: str = '127.0.0.1'
+    port: int = Field(default=8766, ge=1, le=65535)
+    remote_callable_agents: list[str] = Field(default_factory=list)
+    remote_workspaces: dict[str, str] = Field(default_factory=dict)
+    token_ttl_sec: float = Field(default=3600, gt=0)
+    result_fetch_grace_sec: float = Field(default=30, ge=0, le=300)
+    max_calls_per_token: int = Field(default=16, ge=1)
+    max_concurrent_per_token: int = Field(default=2, ge=1)
+    rate_limit_per_min: int = Field(default=60, ge=1)
+    max_body_bytes: int = Field(default=65536, ge=1)
+    require_approval: bool = True
+    public_url: str = ''
+    access_note: str = ''
+    @model_validator(mode='before')
+    @classmethod
+    def reject_removed_access_option(cls, value: Any) -> Any:
+        if isinstance(value, dict) and 'require_cf_access' in value:
+            raise ValueError('require_cf_access was removed; configure Cloudflare Access authentication at the edge')
+        return value
+
+    @model_validator(mode='after')
+    def validate_remote(self) -> RemoteConfig:
+        if self.host == 'localhost':
+            self.host = '127.0.0.1'
+        try:
+            if not ipaddress.ip_address(self.host).is_loopback:
+                raise ValueError('remote gateway must bind a loopback address')
+        except ValueError:
+            raise ValueError('remote gateway must bind a loopback address') from None
+        for name, path in self.remote_workspaces.items():
+            if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', name):
+                raise ValueError('remote workspace names must be simple names, never paths')
+            if not Path(path).expanduser().is_absolute():
+                raise ValueError('remote workspace paths must be absolute')
+        return self
+
+
+class HubConfig(BaseModel):
+    host: str = '127.0.0.1'
+    port: int = Field(default=8765, ge=1, le=65535)
+    max_depth: int = Field(default=3, ge=0)
+    allow_insecure_callbacks: bool = False
+    remote: RemoteConfig = Field(default_factory=RemoteConfig)
+
+    @model_validator(mode='after')
+    def separate_remote_port(self) -> HubConfig:
+        if self.remote.enabled and self.remote.port == self.port:
+            raise ValueError('remote gateway and admin must use separate ports')
+        return self
+
+
 class AppConfig(BaseModel):
+    hub: HubConfig = Field(default_factory=HubConfig)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
     env: EnvConfig = Field(default_factory=EnvConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     coordinator: CoordinatorConfig = Field(default_factory=CoordinatorConfig)
     quota: QuotaConfig = Field(default_factory=QuotaConfig)
     warnings: list[str] = Field(default_factory=list)
+
+    def validate_remote_agents(self) -> None:
+        if not self.hub.remote.enabled:
+            return
+        for name in self.hub.remote.remote_callable_agents:
+            agent = self.get(name)
+            if agent.remote_allow_unsafe_permissions:
+                logging.getLogger(__name__).warning('remote agent %s explicitly allows unsafe permissions', name)
+            elif agent.unsafe_remote_permissions():
+                raise ValueError(f'remote agent {name} skips permissions; set remote_allow_unsafe_permissions=true to explicitly opt in')
+
+    @model_validator(mode='after')
+    def validate_remote_boundary(self) -> AppConfig:
+        self.validate_remote_agents()
+        return self
 
     def get(self, name: str) -> AgentConfig:
         if name not in self.agents:
@@ -248,8 +398,8 @@ def _merge_agent_spec(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str
     for key, value in overlay.items():
         if value in (None, [], {}):
             continue
-        if key == "env" and isinstance(out.get("env"), dict) and isinstance(value, dict):
-            out["env"] = {**out["env"], **value}
+        if key in {"env", "cli", "cloud"} and isinstance(out.get(key), dict) and isinstance(value, dict):
+            out[key] = {**out[key], **value}
         else:
             out[key] = value
     return out
@@ -472,7 +622,7 @@ def load_config(home: Path | None = None) -> AppConfig:
             f"{overlay_path} is not valid TOML: {exc}. "
             "Fix or delete the file, then restart the Bridge."
         ) from exc
-    supported_sections = {"agents", "env", "server", "coordinator", "quota"}
+    supported_sections = {"agents", "env", "server", "coordinator", "quota", "hub"}
     unsupported = sorted(set(overlay_raw) - supported_sections)
     warnings = []
     if unsupported:
@@ -510,6 +660,7 @@ def load_config(home: Path | None = None) -> AppConfig:
     coordinator = CoordinatorConfig.model_validate(coord_raw)
     quota = QuotaConfig.model_validate({**_coerce_quota(bundled_raw), **_coerce_quota(overlay_raw)})
     return AppConfig(
+        hub=HubConfig.model_validate({**bundled_raw.get('hub', {}), **overlay_raw.get('hub', {})}),
         agents=agents,
         env=env,
         server=server,

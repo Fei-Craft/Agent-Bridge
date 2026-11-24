@@ -6,13 +6,19 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from agent_bridge.paths import log_path
+from agent_bridge.secrets import redact
+
+
+class SecretFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return redact(super().format(record))
 
 
 def setup_logging(home: Path | None = None) -> None:
     root = logging.getLogger()
     if getattr(root, "_agent_bridge_configured", False):
         return
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    formatter = SecretFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     stderr = logging.StreamHandler(sys.stderr)
     stderr.setFormatter(formatter)
     file_handler = RotatingFileHandler(log_path(home), maxBytes=2_000_000, backupCount=3, encoding="utf-8")
