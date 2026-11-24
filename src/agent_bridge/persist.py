@@ -10,6 +10,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from agent_bridge.secrets import redact
+
 
 class FileLockTimeout(TimeoutError):
     pass
@@ -69,6 +71,10 @@ def file_lock(path: Path, *, timeout_sec: float = 5.0) -> Iterator[None]:
 
 
 def atomic_write_text(path: Path, text: str) -> None:
+    _atomic_write_text(path, redact(text))
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
@@ -81,7 +87,7 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 
 def atomic_write_json(path: Path, payload: Any) -> None:
-    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    _atomic_write_text(path, json.dumps(redact(payload), ensure_ascii=False, indent=2) + "\n")
 
 
 def read_json(path: Path, default: Any) -> Any:

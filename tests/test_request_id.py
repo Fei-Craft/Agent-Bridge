@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import types
 import uuid
 
@@ -107,6 +109,28 @@ async def test_request_id_survives_restart(bridge_home, tmp_path):
             await registry2.dispatch_task(**{**args, "message": "different"})
     finally:
         await registry2.stop()
+
+
+async def test_legacy_request_id_survives_upgrade(bridge_home, tmp_path):
+    registry = Registry.create(bridge_home)
+    await registry.start()
+    request_id = str(uuid.uuid4())
+    args = dict(agent='fake', message='legacy', cwd=str(tmp_path), request_id=request_id)
+    first = await registry.dispatch_task(**args)
+    await registry.wait_task(first['task_id'], 5)
+    original = ('fake', 'legacy', str(tmp_path.resolve()), None, None, None, None, False)
+    fingerprint = hashlib.sha256(json.dumps(original, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+    registry._requests[request_id] = fingerprint, first['task_id']
+    registry.save()
+    await registry.stop()
+    restored = Registry.create(bridge_home)
+    await restored.start()
+    try:
+        assert (await restored.dispatch_task(**args))['task_id'] == first['task_id']
+        with pytest.raises(ValueError, match='different dispatch request'):
+            await restored.dispatch_task(**args, callback_url='https://8.8.8.8')
+    finally:
+        await restored.stop()
 
 
 async def test_uuid_validation_and_canonicalization(bridge_home, tmp_path):

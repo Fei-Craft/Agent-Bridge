@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
 
 from agent_bridge.claude_meta import apply_claude_gateway_env, claude_config_home, describe_claude_auth
+from agent_bridge.cli_exec import cli_command
 from agent_bridge.codex_exec import resolve_codex_command
 from agent_bridge.config import AgentConfig, EnvConfig
 from agent_bridge.devin_meta import apply_devin_env
@@ -21,6 +23,7 @@ from agent_bridge.dsh_home import (
 from agent_bridge.kimi_observe import kimi_home
 from agent_bridge.minimax_meta import describe_minimax_auth, minimax_data_dir
 from agent_bridge.processes import reap_subprocess, resolve_command
+from agent_bridge.secrets import cloud_key
 from agent_bridge.worker_env import build_worker_env, enforce_env_deny
 from agent_bridge.zcode_meta import describe_zcode_auth, zcode_home
 
@@ -115,6 +118,16 @@ def _kimi_auth(env: dict[str, str]) -> str:
 
 
 async def probe_agent(cfg: AgentConfig, env_config: EnvConfig | None = None) -> dict:
+    if cfg.protocol == 'cloud':
+        cloud = cfg.cloud
+        assert cloud is not None
+        missing = []
+        if not cloud_key(cloud.provider, cloud.api_key_env):
+            missing.append(cloud.api_key_env)
+        if cloud.provider == 'devin' and not (cloud.org_id or os.environ.get(cloud.org_id_env)):
+            missing.append(cloud.org_id_env)
+        return {'agent': cfg.name, 'available': not missing, 'version': None,
+                'detail': 'missing ' + ', '.join(missing) if missing else f'cloud {cloud.provider}; credentials present (not verified)'}
     if cfg.protocol == "fake":
         return {"agent": cfg.name, "available": True, "version": "fake", "detail": "in-process fake adapter"}
     resolved = build_worker_env(
@@ -123,6 +136,8 @@ async def probe_agent(cfg: AgentConfig, env_config: EnvConfig | None = None) -> 
         log_fill=False,
     )
     def _resolve_probe_command() -> list[str]:
+        if cfg.protocol == 'cli':
+            return cli_command(cfg)
         if cfg.name == "dsh":
             return resolve_dsh_command(cfg.command, cfg.fallback_commands)
         if cfg.protocol == "codex":
@@ -136,6 +151,10 @@ async def probe_agent(cfg: AgentConfig, env_config: EnvConfig | None = None) -> 
 
     details: list[str] = [f"command={command[0]}"]
     version = await _version_string(command[0])
+
+    if cfg.protocol == 'cli':
+        return {'agent': cfg.name, 'available': True, 'version': version or None,
+                'detail': '; '.join([*details, f'protocol=cli; parser={cfg.cli.parser}; one subprocess per turn'])}
 
     if cfg.name == "dsh":
         bin_path = next((arg for arg in command if arg.endswith((".js", ".ts"))), None)
@@ -284,7 +303,9 @@ def command_exists(cfg: AgentConfig, *, env: dict[str, str] | None = None) -> bo
     if cfg.protocol == "fake":
         return True
     try:
-        if cfg.name == "dsh":
+        if cfg.protocol == 'cli':
+            cli_command(cfg)
+        elif cfg.name == "dsh":
             resolve_dsh_command(cfg.command, cfg.fallback_commands)
         elif cfg.protocol == "codex":
             resolve_codex_command(

@@ -6,11 +6,13 @@ import os
 import re
 import sys
 from collections.abc import Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from agent_bridge.config import DEFAULT_INHERIT_KEYS, EnvConfig
+from agent_bridge.config import DEFAULT_INHERIT_KEYS, EnvConfig, normalize_dsh_permission_mode
 from agent_bridge.paths import (
     WORKER_CONTEXT_ENV,
     WORKER_CONTEXT_VALUE,
@@ -20,6 +22,9 @@ from agent_bridge.paths import (
 )
 
 log = logging.getLogger(__name__)
+
+hub_worker_context: ContextVar[Mapping[str, str]] = ContextVar('hub_worker_context', default=MappingProxyType({}))
+caller_session_context: ContextVar[str | None] = ContextVar('caller_session_context', default=None)
 
 
 def is_worker_context(env: Mapping[str, str] | None = None) -> bool:
@@ -511,7 +516,7 @@ def install_host_env(config: EnvConfig, *, base: Mapping[str, str] | None = None
 # Bridge's own wiring must survive every deny pattern: stripping the
 # worker-context marker or the nested AGENT_BRIDGE_HOME would let a nested
 # Bridge run as a coordinator on the default home.
-BRIDGE_OWNED_ENV_KEYS = frozenset({WORKER_CONTEXT_ENV, "AGENT_BRIDGE_HOME"})
+BRIDGE_OWNED_ENV_KEYS = frozenset({WORKER_CONTEXT_ENV, "AGENT_BRIDGE_HOME", 'AGENT_BRIDGE_HUB_URL', 'AGENT_BRIDGE_HUB_TOKEN', 'AGENT_BRIDGE_CALLER_SESSION'})
 
 
 def denied_by_policy(key: str, cfg: EnvConfig, explicit: set[str] | None = None) -> bool:
@@ -600,6 +605,18 @@ def build_worker_env(
     # /nested when the parent-context mark is present. A host that env-clears
     # the MCP child drops both — that residual is documented in SETUP.md.
     if worker_context:
+        for key in ('AGENT_BRIDGE_HUB_URL', 'AGENT_BRIDGE_HUB_TOKEN', 'AGENT_BRIDGE_CALLER_SESSION'):
+            if hub_worker_context.get().get('AGENT_BRIDGE_HUB') == 'off':
+                env.pop(key, None)
+                continue
+            value = (hub_worker_context.get().get(key) if hub_worker_context.get()
+                     else (base or os.environ).get(key))
+            if value:
+                env[key] = value
+            else:
+                env.pop(key, None)
+        if hub_worker_context.get().get('AGENT_BRIDGE_HUB') == 'off':
+            env['AGENT_BRIDGE_HUB'] = 'off'
         env[WORKER_CONTEXT_ENV] = WORKER_CONTEXT_VALUE
         origin[WORKER_CONTEXT_ENV] = "worker-context"
         # The nested home derives from the registry home, not the env var:
@@ -607,6 +624,8 @@ def build_worker_env(
         # worker's nested Bridge to a different directory (G2).
         env["AGENT_BRIDGE_HOME"] = str(nested_bridge_home(home) if home is not None else nested_bridge_home(bridge_home()))
         origin["AGENT_BRIDGE_HOME"] = "worker-context"
+    if 'DSH_PERMISSION_MODE' in env:
+        env['DSH_PERMISSION_MODE'] = normalize_dsh_permission_mode(env['DSH_PERMISSION_MODE'])
     if log_fill:
         status = describe_env(config, env=env, origin=origin)
         log.info("worker environment: %s", format_env_status(status))

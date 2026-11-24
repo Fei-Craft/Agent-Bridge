@@ -37,6 +37,18 @@ from agent_bridge.registry import (
 from agent_bridge.transcript import append_event, read_events
 
 
+@pytest.mark.parametrize('field', ['model', 'effort'])
+@pytest.mark.parametrize('value', ['', '--dir=/', 'x y', 'x' * 101, 'x\n', 'x"'])
+async def test_dispatch_rejects_unsafe_selections(bridge_home, tmp_path, field, value):
+    registry = Registry.create(bridge_home)
+    try:
+        with pytest.raises(ValueError, match=field):
+            await registry.dispatch_task('fake', 'hello', cwd=str(tmp_path), **{field: value})
+        assert not registry.tasks
+    finally:
+        await registry.stop()
+
+
 @pytest.mark.asyncio
 async def test_dispatch_records_model_and_effort(bridge_home, tmp_path):
     work = tmp_path / "work"
@@ -2300,6 +2312,25 @@ async def test_worker_error_and_warnings_are_sanitized_before_persisting(
         registry.save()
         state = json.loads(state_path(bridge_home).read_text(encoding="utf-8"))
         assert secret not in json.dumps(state)
+    finally:
+        await registry.stop()
+
+
+async def test_worker_revoke_error_does_not_skip_completion(bridge_home, tmp_path, monkeypatch):
+    def fail_forget(digest):
+        raise RuntimeError('redaction cleanup failed')
+
+    monkeypatch.setattr('agent_bridge.worker_tokens.forget', fail_forget)
+    registry = Registry.create(bridge_home)
+    registry.worker_url = 'http://127.0.0.1:8765'
+    await registry.start()
+    try:
+        dispatched = await registry.dispatch_task('fake', 'work', cwd=str(tmp_path))
+        task_id = dispatched['task_id']
+        await asyncio.wait_for(registry._done[task_id].wait(), 5)
+        assert registry.tasks[task_id].status == TaskStatus.completed
+        assert task_id not in registry._bg
+        assert not registry.worker_tokens.active and not registry.worker_tokens.scopes
     finally:
         await registry.stop()
 

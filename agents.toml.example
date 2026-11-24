@@ -1,6 +1,34 @@
 # Copy to %USERPROFILE%\.agent-bridge\agents.toml and uncomment what you need.
 # This file is the machine-local overlay (not the repo default).
 
+[hub]
+allow_insecure_callbacks = false # opt in only to permit loopback HTTP callbacks
+host = "127.0.0.1"
+port = 8765
+max_depth = 3
+
+# Opt into a headless worker. ACP remains the bundled default. Restart the hub
+# (or local MCP server) after changing protocols; start a NEW session.
+# Presets exist for opencode, claude and cursor; no command override is needed.
+# [agents.opencode]
+# protocol = "cli"  # change back to "acp" to restore the ACP command
+# [agents.opencode.cli]
+# extra_args = ["--format", "json", "--auto", "--dir", "{cwd}", "--pure"]
+
+# Add any other one-shot CLI without Python code (argv, never a shell template):
+# [agents.my_cli]
+# protocol = "cli"
+# command = ["my-cli"]
+# revivable = true
+# [agents.my_cli.cli]
+# parser = "jsonl"  # text | jsonl | claude | opencode | cursor
+# prompt_args = ["--", "{prompt}"] # never pass an unprotected positional prompt
+# prompt_stdin = false  # for stdin: true AND prompt_args = []
+# resume_args = ["--resume", "{session}"]
+# model_args = ["--model", "{model}"]
+# effort_args = ["--effort", "{effort}"]
+# extra_args = ["--output-format", "jsonl"]
+
 # Behind a firewall only. A machine on a direct network needs no proxy;
 # a null env.proxy in list_agents is normal there.
 # [env.proxy]
@@ -94,6 +122,61 @@
 #   npm install -g @minimax-ai/code
 # [env.set]
 # MINIMAX_DATA_DIR = "D:/minimax"
+
+# Cloud API workers (uncomment complete blocks; no local command required).
+# Optional cloud-to-local access uses a SEPARATE loopback-only gateway. Never tunnel admin 8765.
+# [hub.remote]
+# enabled = false
+# host = "127.0.0.1"
+# port = 8766
+# remote_callable_agents = ["opencode"]
+# remote_workspaces = { project = "/absolute/trusted/project" }
+# token_ttl_sec = 3600 # default, independent of the cloud turn timeout
+# result_fetch_grace_sec = 30
+# max_calls_per_token = 16
+# max_concurrent_per_token = 2
+# rate_limit_per_min = 60
+# max_body_bytes = 65536
+# require_approval = true # default; local approval required before execution
+# # Per-agent remote selections are denied unless explicitly allowlisted:
+# # [agents.my_cli]
+# # remote_allowed_models = ["provider/model"]
+# # remote_allowed_efforts = ["low", "high"]
+# public_url = "https://your-gateway.example.com"
+# access_note = "Supply Cloudflare Access service-token headers via your cloud secret store."
+# Configure Cloudflare Access authentication at the edge; no presence-only JWT check.
+
+# Use `agent-bridge secrets set cursor` / `set devin`, then restart the hub.
+# Explicit environment fallback warns; never store keys in this file.
+# [agents.cursor-cloud]
+# protocol = "cloud"
+# stall_timeout_sec = 0
+# turn_timeout_sec = 86400
+# [agents.cursor-cloud.cloud]
+# provider = "cursor"
+# api_key_env = "CURSOR_API_KEY"
+# base_url = "https://api.cursor.com"
+# repo = "https://github.com/org/repo"
+# ref = "main"
+# auto_create_pr = true
+# model = "composer-2"
+# poll_interval_sec = 5
+#
+# [agents.devin-cloud]
+# protocol = "cloud"
+# [agents.devin-cloud.cloud]
+# provider = "devin"
+# api_key_env = "DEVIN_API_KEY"
+# base_url = "https://api.devin.ai"
+# org_id_env = "DEVIN_ORG_ID"
+# # org_id = "org-your-org" # alternatively set a non-secret org ID here
+# repo = "https://github.com/org/repo"
+# ref = "main" # prompt instruction; Devin has no dedicated checkout-ref field
+# devin_mode = "fast" # --model, then --effort, overrides this on creation
+# max_acu_limit = 5 # cumulative session ACUs, not tokens
+# poll_interval_sec = 5
+# # Cancel/end_session terminates Devin permanently; start a new session afterward.
+# # Hub shutdown/idle unload leave cloud work running and provider billing active.
 
 # DSH: do not put a personal checkout path in the repo agents.toml.
 # Optional overrides live here or in the process environment:

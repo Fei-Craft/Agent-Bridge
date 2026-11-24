@@ -15,8 +15,9 @@ from typing import Any, Literal
 import psutil
 
 from agent_bridge.adapters import build_adapter
-from agent_bridge.adapters.acp import AcpError
+from agent_bridge.adapters.acp import AcpAdapter, AcpError
 from agent_bridge.adapters.base import Adapter
+from agent_bridge.adapters.cloud import CloudAdapter
 from agent_bridge.config import (
     COORDINATOR_MODE_HINTS,
     AgentConfig,
@@ -25,6 +26,7 @@ from agent_bridge.config import (
     normalize_coordinator_mode,
     write_coordinator_overlay,
 )
+from agent_bridge.delivery import Deliveries, pending, validate_callback
 from agent_bridge.diagnostics import redact_diagnostic
 from agent_bridge.grok_observe import observe_grok_session
 from agent_bridge.kimi_observe import observe_kimi_session
@@ -38,6 +40,7 @@ from agent_bridge.models import (
     TaskStatus,
     iso,
     normalize_effort,
+    validate_selection,
 )
 from agent_bridge.paths import ensure_home, result_path, state_path, transcript_path
 from agent_bridge.persist import (
@@ -49,6 +52,7 @@ from agent_bridge.persist import (
 from agent_bridge.probes import probe_agent
 from agent_bridge.processes import count_sibling_servers, owner_alive, process_create_time, reap_orphans
 from agent_bridge.quota import QuotaCache, fetch_quota, looks_like_quota_error, provider_table, unknown_quota
+from agent_bridge.secrets import cloud_key, load_callback_secret, migrate, redact
 from agent_bridge.transcript import (
     append_event,
     flush_pending,
@@ -62,7 +66,15 @@ from agent_bridge.transcript import (
     recent_activity,
     worker_silence_sec,
 )
-from agent_bridge.worker_env import build_worker_env, describe_env, install_host_env, is_worker_context
+from agent_bridge.worker_env import (
+    build_worker_env,
+    caller_session_context,
+    describe_env,
+    hub_worker_context,
+    install_host_env,
+    is_worker_context,
+)
+from agent_bridge.worker_tokens import WorkerTokens
 from agent_bridge.workspace import merge_files_changed, snapshot_workspace
 
 log = logging.getLogger(__name__)
@@ -182,6 +194,12 @@ class Registry:
         self._sibling_cache: tuple[float, int] | None = None
         self._quota_cache = QuotaCache(config.quota.cache_sec)
         self._stopping = False
+        self.worker_tokens = WorkerTokens()
+        self.worker_url: str | None = None
+        self.deliveries = Deliveries(self)
+        from agent_bridge.remote import RemoteGateway
+
+        self.remote = RemoteGateway(self)
         self._pending_state: dict[str, list[dict]] | None = None
         self._pending_gen = 0
         self._flush_task: asyncio.Task[None] | None = None
@@ -461,6 +479,10 @@ class Registry:
 
     async def start(self) -> None:
         self._stopping = False
+        migrate(self.home)
+        for cfg in self.config.agents.values():
+            if cfg.cloud is not None:
+                cloud_key(cfg.cloud.provider, cfg.cloud.api_key_env)
         install_host_env(self.config.env)
         reap_orphans(self.home)
         payload = self._load_state()
@@ -524,6 +546,7 @@ class Registry:
         if not await self.flush_state():
             raise RuntimeError("could not persist state.json") from self._state_error
         self.touch_activity()
+        self.deliveries.start()
         if self.config.server.idle_exit_sec > 0:
             self._watchdog = asyncio.create_task(
                 self._idle_exit_watchdog(),
@@ -532,6 +555,9 @@ class Registry:
 
     async def stop(self) -> None:
         self._stopping = True
+        self.worker_tokens.close()
+        self.remote.close()
+        await self.deliveries.stop()
         await self._quota_cache.close()
         watchdog = self._watchdog
         self._watchdog = None
@@ -580,6 +606,10 @@ class Registry:
         if existing is not None:
             return existing
         adapter = build_adapter(self.config.get(session.agent), self.home, self.config.env)
+        if self.worker_url is not None:
+            adapter.worker_tokens = self.worker_tokens
+        if isinstance(adapter, CloudAdapter):
+            adapter.on_progress = self.save
         self._adapters[session.session_id] = adapter
         return adapter
 
@@ -599,6 +629,8 @@ class Registry:
 
     async def _quota_for(self, cfg: AgentConfig, *, available: bool) -> dict:
         """The ``quota`` block for one ``list_agents`` row. Never raises, never gates ``available``."""
+        if cfg.protocol == 'cloud':
+            return unknown_quota('cloud usage is reported per task; no quota probe').model_dump(mode='json')
         quota_cfg = self.config.quota
         if not quota_cfg.enabled:
             return unknown_quota("quota lookup is disabled ([quota] enabled = false)").model_dump(mode="json")
@@ -690,16 +722,44 @@ class Registry:
         self,
         agent: str,
         message: str,
-        cwd: str,
+        cwd: str | None = None,
         session_id: str | None = None,
         model: str | None = None,
         effort: str | None = None,
         title: str | None = None,
         user_requested: bool = False,
         request_id: str | None = None,
+        repo: str | None = None,
+        ref: str | None = None,
+        notify_caller: bool = False,
+        caller_session_id: str | None = None,
+        callback_url: str | None = None,
+        callback_secret_name: str | None = None,
+        notification_source_task_id: str | None = None,
+        remote_origin: bool = False,
     ) -> dict:
         if not self.dispatch_enabled:
             raise RuntimeError(NESTED_DISPATCH_ERROR)
+        validate_selection(model, 'model')
+        validate_selection(effort, 'effort')
+        if caller_session_context.get() is not None and callback_secret_name is not None:
+            raise PermissionError('callback_secret_name is admin-only')
+        caller_task = self._busy_task(caller_session_id) if caller_session_id else None
+        if caller_session_id and caller_session_id not in self.sessions:
+            raise ValueError('unknown caller session')
+        if caller_session_id and session_id == caller_session_id:
+            raise ValueError('cannot dispatch into caller session')
+        depth = self.sessions[caller_session_id].call_depth + 1 if caller_session_id else 0
+        if not notification_source_task_id and depth > min(3, self.config.hub.max_depth):
+            raise ValueError('hub max_depth exceeded')
+        if caller_task and caller_task.notification_source_task_id:
+            notify_caller, callback_url, callback_secret_name = False, None, None
+        callback_secret = load_callback_secret(callback_secret_name)
+        await validate_callback(callback_url, callback_secret, allow_insecure=self.config.hub.allow_insecure_callbacks)
+        if notify_caller and (not caller_session_id or caller_session_id not in self.sessions):
+            raise ValueError('notify_caller requires a hub worker caller session')
+        if notification_source_task_id and (notify_caller or callback_url):
+            raise ValueError('notification delivery turns cannot request notifications')
         if self.config.coordinator.mode == "manual" and not user_requested:
             raise RuntimeError(
                 "coordinator mode is manual: dispatch only when the user explicitly "
@@ -711,21 +771,33 @@ class Registry:
                 request_id = str(uuid.UUID(request_id))
             except ValueError:
                 raise ValueError("request_id must be a UUID") from None
-        cwd_path = Path(cwd)
-        if not cwd_path.is_absolute():
+        agent_cfg = self.config.get(agent)
+        cloud = agent_cfg.protocol == 'cloud'
+        if not cloud and not cwd:
+            raise ValueError('cwd is required for local agents')
+        cwd_path = Path(cwd or '.')
+        if not cloud and not cwd_path.is_absolute():
             raise ValueError("cwd must be an absolute path")
-        if not cwd_path.exists():
+        if not cloud and not cwd_path.exists():
             raise ValueError(f"cwd does not exist: {cwd_path}")
-        if not cwd_path.is_dir():
+        if not cloud and not cwd_path.is_dir():
             raise ValueError(f"cwd is not a directory: {cwd_path}")
-        effort = normalize_effort(effort)
-        self.config.get(agent)
+        effort = effort if cloud else normalize_effort(effort)
+        resolved_cwd = '' if cloud else str(cwd_path.resolve())
+        if not cloud and (repo is not None or ref is not None):
+            raise ValueError('repo and ref are only supported by cloud agents')
         # Compare supplied arguments, not selections inherited from a mutable session.
-        request = (agent, message, str(cwd_path.resolve()), session_id, model, effort, title, user_requested)
+        request: tuple = (agent, message, resolved_cwd, session_id, model, effort, title, user_requested)
+        if cloud:
+            request += (repo, ref)
+        legacy_request = request if not any((notify_caller, caller_session_id, callback_url, callback_secret_name)) else None
+        request += (notify_caller, caller_session_id, callback_url, callback_secret_name)
         async with self._lock:
             if request_id is not None and request_id in self._requests:
                 previous_fp, task_id = self._requests[request_id]
-                if previous_fp != _request_fingerprint(request):
+                if previous_fp != _request_fingerprint(request) and (
+                    legacy_request is None or previous_fp != _request_fingerprint(legacy_request)
+                ):
                     raise ValueError("request_id is already bound to a different dispatch request")
                 task = self.tasks[task_id]
                 return {
@@ -742,9 +814,17 @@ class Registry:
                 session = self.sessions.get(session_id)
                 if session is None:
                     raise KeyError(f"unknown session {session_id}")
+                if caller_session_id and caller_session_context.get() == caller_session_id and session.caller_session_id != caller_session_id:
+                    raise ValueError('session is not owned by caller')
                 if session.agent != agent:
                     raise ValueError(f"session {session_id} belongs to agent {session.agent}, not {agent}")
-                if Path(session.cwd).resolve() != cwd_path.resolve():
+                if cloud and repo is not None and repo != session.repo:
+                    raise ValueError('follow-up repo must be the same repository')
+                if cloud and ref is not None and ref != session.ref:
+                    raise ValueError('follow-up ref must be the same repository ref')
+                if cloud and (session.remote.get('resumable') is False or session.proc_state == ProcState.dead):
+                    raise ValueError('cloud session was terminated and cannot be resumed')
+                if not cloud and Path(session.cwd).resolve() != cwd_path.resolve():
                     raise ValueError(
                         f"session {session.session_id} is bound to {session.cwd}; "
                         "follow-up cwd must be the same project folder"
@@ -754,37 +834,62 @@ class Registry:
                     raise RuntimeError(
                         f"session {session.session_id} is busy with {busy.task_id}; call wait_task first"
                     )
+                if session.caller_session_id != caller_session_id:
+                    session.caller_session_id = None
             else:
                 session = Session(
+                    caller_session_id=caller_session_id,
+                    call_depth=depth,
                     session_id=_new_id("sess"),
                     agent=agent,
-                    cwd=str(cwd_path.resolve()),
-                    model=model,
-                    effort=effort,
+                    cwd=resolved_cwd,
+                    repo=repo if repo is not None else (agent_cfg.cloud.repo if agent_cfg.cloud else None),
+                    ref=ref if ref is not None else (agent_cfg.cloud.ref if agent_cfg.cloud else None),
+                    model=None if cloud else model,
+                    effort=None if cloud else effort,
                     title=title,
                     proc_state=ProcState.spawning,
                 )
                 self._stamp_owner(session)
                 self.sessions[session.session_id] = session
-            if model:
+            if model and not cloud:
                 session.model = model
-            if effort:
+            if effort and not cloud:
                 session.effort = effort
             if title:
                 session.title = title
             if session_id is None:
-                session.cwd = str(cwd_path.resolve())
+                session.cwd = resolved_cwd
             session.last_active_at = iso()
+            session.remote_origin = session.remote_origin or remote_origin
+            if caller_session_id:
+                session.call_depth = max(session.call_depth, depth)
             task = Task(
+                call_depth=session.call_depth,
                 task_id=_new_id("task"),
                 session_id=session.session_id,
                 agent=agent,
                 message=message,
                 cwd=session.cwd,
+                repo=session.repo,
+                ref=session.ref,
+                remote={key: value for key, value in session.remote.items()
+                        if key in {'provider', 'url', 'agent_id', 'session_id', 'devin_mode', 'resumable'}},
                 model=model or session.model,
                 effort=effort or session.effort,
                 status=TaskStatus.queued,
+                notify_caller=notify_caller,
+                caller_session_id=caller_session_id,
+                callback_url=callback_url,
+                callback_signed=callback_secret is not None,
+                caller_delivery={'status': 'pending'} if notify_caller else {},
+                callback_delivery={'status': 'pending', 'attempts': 0} if callback_url else {},
+                notification_source_task_id=notification_source_task_id,
             )
+            if callback_secret is not None:
+                self.deliveries.store_secret(task.task_id, callback_secret)
+            if notification_source_task_id:
+                session.notification_receipts[notification_source_task_id] = task.task_id
             self._stamp_owner(task)
             self.tasks[task.task_id] = task
             if request_id is not None:
@@ -814,8 +919,8 @@ class Registry:
             "task_id": task.task_id,
             "session_id": session.session_id,
             "agent": agent,
-            "model": session.model,
-            "effort": session.effort,
+            "model": task.model,
+            "effort": task.effort,
             "persisted": persisted,
             **({"request_id": request_id, "reused": False} if request_id is not None else {}),
         }
@@ -832,9 +937,19 @@ class Registry:
         self.save()
         watch = None
         before: dict[str, tuple[int, int]] | None = None
+        worker_context = None
         try:
+            self.worker_tokens.active.add(session.session_id)
+            if session.remote_origin:
+                worker_context = hub_worker_context.set({'AGENT_BRIDGE_HUB': 'off'})
+            elif self.worker_url is not None:
+                env = {'AGENT_BRIDGE_HUB_URL': self.worker_url}
+                if not isinstance(adapter, AcpAdapter):
+                    env['AGENT_BRIDGE_HUB_TOKEN'] = self.worker_tokens.issue(session.session_id)
+                worker_context = hub_worker_context.set(env)
             mark_worker_activity(session.session_id, self.home)
-            before = await asyncio.to_thread(snapshot_workspace, task.cwd)
+            if self.config.get(session.agent).protocol != 'cloud':
+                before = await asyncio.to_thread(snapshot_workspace, task.cwd)
             agent_cfg = self.config.get(session.agent)
             limit = agent_cfg.stall_timeout_sec
             turn_cap = agent_cfg.turn_timeout_sec
@@ -846,7 +961,12 @@ class Registry:
                 if limit > 0 or turn_cap > 0
                 else None
             )
-            result = await adapter.run_turn(session, task)
+            turn_task = task
+            if isinstance(adapter, CloudAdapter) and self.config.hub.remote.enabled:
+                _, instructions = self.remote.issue(task)
+                turn_task = task.model_copy(update={'message': task.message + instructions})
+            result = await adapter.run_turn(session, turn_task)
+            task.remote.update(result.remote)
             if result.native_session_id:
                 session.native_session_id = result.native_session_id
             task.result_chars = len(result.text)
@@ -862,16 +982,17 @@ class Registry:
                     f"full result persistence failed: {type(exc).__name__}: {exc}"
                 )
                 log.exception("could not persist full result for task %s", task.task_id)
-            inside_changed, outside_changed = await asyncio.to_thread(
-                merge_files_changed, task.cwd, result.files_changed, before
-            )
-            self._set_files_changed(task, inside_changed, outside_changed)
+            if before is not None:
+                inside_changed, outside_changed = await asyncio.to_thread(
+                    merge_files_changed, task.cwd, result.files_changed, before
+                )
+                self._set_files_changed(task, inside_changed, outside_changed)
             task.usage = result.usage
-            if session.agent == "grok":
+            if session.agent == "grok" and agent_cfg.protocol != 'cloud':
                 observed = await asyncio.to_thread(observe_grok_session, session.cwd, session.native_session_id)
                 task.observed_model = observed["model"]
                 task.observed_effort = observed["effort"]
-            elif session.agent == "kimi":
+            elif session.agent == "kimi" and agent_cfg.protocol != 'cloud':
                 observed = await asyncio.to_thread(observe_kimi_session, session.native_session_id)
                 task.observed_model = observed["model"]
                 task.observed_effort = observed["effort"]
@@ -924,6 +1045,16 @@ class Registry:
                     task.failure = exc.failure if isinstance(exc, AcpError) else None
                     task.stop_reason = "error"
         finally:
+            self.worker_tokens.active.discard(session.session_id)
+            process = self.worker_tokens.processes.get(session.session_id)
+            if process is None or process.returncode is not None:
+                try:
+                    self.worker_tokens.revoke(session.session_id)
+                except Exception:
+                    log.exception('could not clean up worker credential for session %s', session.session_id)
+            if worker_context is not None:
+                hub_worker_context.reset(worker_context)
+            self.remote.finish(task_id)
             self._cancel_requested.discard(task_id)
             if watch is not None:
                 watch.cancel()
@@ -1112,7 +1243,10 @@ class Registry:
                 log.info("removed orphan result %s (no task row)", orphan.name)
 
     def _drop_task(self, task_id: str) -> None:
+        if task_id in self.tasks and pending(self.tasks[task_id]):
+            return
         self.tasks.pop(task_id, None)
+        self.deliveries.delete_secret(task_id)
         self._requests = {
             key: binding for key, binding in self._requests.items() if binding[1] != task_id
         }
@@ -1130,6 +1264,8 @@ class Registry:
             if session.proc_state in {ProcState.dead, ProcState.idle_unloaded}
             and session.session_id not in self._adapters
             and self._busy_task(session.session_id) is None
+            and not any(pending(t) and (t.session_id == session.session_id or t.caller_session_id == session.session_id)
+                        for t in self.tasks.values())
         ]
         candidates.sort(key=lambda item: _session_last_active_ts(item.last_active_at), reverse=True)
         drop = [
@@ -1321,6 +1457,12 @@ class Registry:
             "error": task.error,
             "failure": task.failure.model_dump(mode="json") if task.failure else None,
             "warnings": task.warnings,
+            "remote": task.remote,
+            "caller_delivery": task.caller_delivery,
+            "callback_delivery": task.callback_delivery,
+            "notification_source_task_id": task.notification_source_task_id,
+            "repo": task.repo,
+            "ref": task.ref,
             "files_changed": task.files_changed,
             "files_changed_total": task.files_changed_total,
             "files_changed_truncated": task.files_changed_truncated,
@@ -1392,7 +1534,7 @@ class Registry:
         persisted = await self._persisted(task)
         if persisted is not None:
             payload["persisted"] = persisted
-        return payload
+        return redact(payload)
 
     async def wait_task(self, task_id: str, timeout_sec: float = DEFAULT_WAIT_SEC) -> dict:
         task = self._require_task(task_id)
@@ -1401,14 +1543,14 @@ class Registry:
             try:
                 await asyncio.wait_for(event.wait(), timeout=timeout_sec)
             except TimeoutError:
-                return {"timed_out": True, **self._task_snapshot(self.tasks[task_id])}
+                return redact({"timed_out": True, **self._task_snapshot(self.tasks[task_id])})
         # A terminal answer must also be on disk, not merely queued
         # behind the background flusher.
-        return {
+        return redact({
             "timed_out": False,
             "persisted": (await self._persisted(task)) is True,
             **self._task_snapshot(self.tasks[task_id], include_result=True),
-        }
+        })
 
     async def check_task(self, task_id: str) -> dict:
         task = self._require_task(task_id, allow_disk=True)
@@ -1507,6 +1649,9 @@ class Registry:
                     "session_id": session.session_id,
                     "agent": session.agent,
                     "cwd": session.cwd,
+                    "repo": session.repo,
+                    "ref": session.ref,
+                    "remote": session.remote,
                     "native_session_id": session.native_session_id,
                     "proc_state": session.proc_state.value,
                     "turns": session.turns,
@@ -1530,12 +1675,18 @@ class Registry:
         session = self.sessions.get(session_id)
         if session is None:
             raise KeyError(f"unknown session {session_id}")
+        self.worker_tokens.revoke(session_id)
         busy = self._busy_task(session_id)
         if busy is not None:
             await self.cancel_task(busy.task_id)
         adapter = self._adapters.pop(session_id, None)
+        if adapter is None and self.config.get(session.agent).protocol == 'cloud':
+            adapter = build_adapter(self.config.get(session.agent), self.home, self.config.env)
         if adapter is not None:
-            await adapter.shutdown(session)
+            if isinstance(adapter, CloudAdapter):
+                await adapter.end_session(session)
+            else:
+                await adapter.shutdown(session)
         self._cancel_idle(session_id)
         forget_worker_activity(session_id, self.home)
         session.proc_state = ProcState.dead

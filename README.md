@@ -13,6 +13,39 @@
 
 ## English
 
+### Central hub
+
+Run `agent-bridge ui` for the built-in Chinese local dashboard (`ui --no-open`
+prints a one-time login link). View tasks, transcripts, results, delivery status,
+agents and sessions; dispatch/cancel work and review gateway audit/approvals.
+Only the admin loopback listener serves `/ui`. See [Local dashboard](HUB.md#local-dashboard).
+
+Run `agent-bridge serve` once; coordinator MCP instances auto-proxy to its shared
+Registry. Any shell-capable agent can call peers with `agent-bridge ask` or
+`agent-bridge call`. `ask` / `invoke` wait until done by default; use explicit
+`--timeout` to bound waiting. MCP `invoke_agent` sends progress while waiting.
+For parallel work use `ask --async` inside a worker (automatic result follow-up),
+or dispatch with a signed HTTP callback. Some MCP clients cap tool duration:
+use async/polling then. See [Hub setup, REST API and security](HUB.md).
+
+Cloud workers are also supported: Cursor Cloud (v1) and Devin (v3), configured
+with `protocol = "cloud"`, OS-keyring API keys (`agent-bridge secrets set cursor` /
+`set devin`; hidden input, explicit warned environment fallback), and repository URLs instead
+of a local cwd. See [cloud setup](HUB.md#cloud-api-workers) and the commented
+presets in `agents.toml.example`. Cloud calls incur provider costs; Devin uses
+ACUs, and **cancelling terminates its session permanently**. Cloud workers do not
+inherit admin hub credentials or directly reach a loopback hub. Optional
+[cloud-to-local access](HUB.md#opt-in-cloud-to-local-gateway) uses a separate,
+off-by-default gateway with scoped per-turn tokens, named workspaces, quotas,
+local approvals and a remote-port-only tunnel. Never tunnel the admin port.
+Hub shutdown and idle unload leave cloud agents running; remote billing may
+continue until you explicitly cancel or end the session.
+
+Want a headless `cli -p` style worker instead of ACP? Set `protocol = "cli"` in
+the agent's user overlay (OpenCode, Claude and Cursor presets), restart and create
+a new session. Defaults stay unchanged. See [configuration and permission caveats](SETUP.md#optional-headless-cli-workers)
+and the [protocol benchmark](HUB.md#headless-cli-option-and-measurements).
+
 Agent Bridge is a connector for local coding agents. A coordinator — Codex, Cursor, Kimi Code, ZCode, Grok Build, Claude Code, or Devin — directs Antigravity CLI, Grok Build, Kimi Code, DeepSeek Harness, OpenCode, Claude Code, Codex CLI, Devin CLI, ZCode, and MiniMax Code. The same product can be a coordinator and a worker; those are different processes. More agents will follow.
 
 ```text
@@ -106,6 +139,7 @@ Close coordinators that are holding Bridge, then `agent-bridge upgrade`, then re
 | `list_agents` | Probe workers, report remaining quota, proxy/env + coordinator policy |
 | `set_preferences` | Persist coordinator mode / routing preferences |
 | `dispatch_task` | Start or resume a turn in the project `cwd` |
+| `invoke_agent` | Call a worker until done, with MCP progress (optional timeout) |
 | `wait_task` | Block up to `timeout_sec` (default 180) |
 | `check_task` | Non-blocking status |
 | `get_result` | Complete final result in pages + changed files |
@@ -167,6 +201,29 @@ uv run pytest
 `tests/` is pytest only. Live coordinator drills use a local `lab/` folder from `scripts/setup_lab.py` — that directory is not in git.
 
 ## 中文
+
+### 中央 Hub
+
+先启动 `agent-bridge serve`，协调器 MCP 会自动代理到共享 Registry。
+任何支持 shell 的 agent 都能用 `agent-bridge ask` / `call` 调用同伴。
+ask/invoke 默认等到结束；--timeout 可限制等待。MCP invoke_agent 会发送进度。
+并行任务用 worker 内 ask --async 自动回推，或 dispatch 配置签名 HTTP 回调。
+部分 MCP 客户端有工具总时限，此时使用异步或轮询。
+参见 [Hub 配置与安全说明](HUB.zh-CN.md)。
+
+也支持 Cursor Cloud v1 / Devin v3 云端 API worker：`protocol = "cloud"`，
+密钥通过 `agent-bridge secrets set cursor` / `set devin` 隐藏输入并保存到 OS keyring，
+环境变量只作带警告的显式回退；使用仓库 URL 而非本地 cwd。配置示例见 `agents.toml.example`，
+用法见 [云端说明](HUB.zh-CN.md#云端-api-worker)。云端调用会产生费用，Devin 使用 ACU，
+**取消会永久终止 Devin session**。云端不继承管理端凭证，也无法直接访问 loopback Hub。
+可选 [云端到本地网关](HUB.zh-CN.md#可选云端到本地网关) 默认关闭，使用独立端口、
+每 turn 作用域 token、命名目录白名单、限额和本机审批；隧道只连接网关，绝不能暴露管理端。
+Hub 关闭或空闲卸载不会停止云端 agent；远程计费可能继续，请显式取消或结束 session。
+
+如需无头 `cli -p` 风格 worker，可在用户配置的对应 agent 下设置 `protocol = "cli"`
+（OpenCode、Claude、Cursor 预设），重启并新建 session；默认仍使用原协议。
+配置、工具自动批准风险与自定义解析器见 [SETUP.md](SETUP.md#optional-headless-cli-workers)，
+性能比较脚本见 [HUB.md](HUB.md#headless-cli-option-and-measurements)。
 
 Agent Bridge 是一个联通各个本地 Agent 的连接器。由协调者——Codex、Cursor、Kimi Code、ZCode、Grok Build、Claude Code 或 Devin——指挥 Antigravity CLI、Grok Build、Kimi Code、DeepSeek Harness、OpenCode、Claude Code、Codex CLI、Devin CLI、ZCode、MiniMax Code 进行工作。同一个产品可以同时是协调者和 Worker，但那是不同进程。后续将推出更多 Agent 支持。
 
@@ -261,6 +318,7 @@ revivable = true
 | `list_agents` | 探测 worker，报告剩余额度、代理 / 环境 + 协调者策略 |
 | `set_preferences` | 持久化协调者模式 / 路由偏好 |
 | `dispatch_task` | 在项目 `cwd` 里开始或续上一次回合 |
+| `invoke_agent` | 等到 worker 结束并发送 MCP 进度，可显式设置超时 |
 | `wait_task` | 最多等待 `timeout_sec`（默认 180） |
 | `check_task` | 非阻塞状态查询 |
 | `get_result` | 分页读取完整结果 + 改过的文件 |
