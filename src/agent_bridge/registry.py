@@ -15,7 +15,7 @@ from typing import Any, Literal
 import psutil
 
 from agent_bridge.adapters import build_adapter
-from agent_bridge.adapters.acp import AcpAdapter, AcpError
+from agent_bridge.adapters.acp import AcpAdapter, AcpError, uses_generic_acp_selection
 from agent_bridge.adapters.base import Adapter
 from agent_bridge.adapters.cloud import CloudAdapter
 from agent_bridge.config import (
@@ -477,6 +477,20 @@ class Registry:
             return {}
         return payload
 
+    @staticmethod
+    def _normalize_persisted_selections(raw: Any) -> Any:
+        if not isinstance(raw, dict):
+            return raw
+        row = raw.copy()
+        for field in ('model', 'effort'):
+            try:
+                validate_selection(row.get(field), field)
+            except ValueError:
+                row[field] = None
+                if field == 'model':
+                    row.pop('acp_model_tier', None)
+        return row
+
     async def start(self) -> None:
         self._stopping = False
         migrate(self.home)
@@ -494,7 +508,7 @@ class Registry:
             and self._foreign_live(raw.get("owner_pid"), raw.get("owner_create_time"))
         }
         for raw in payload.get("sessions") or []:
-            session = Session.model_validate(raw)
+            session = Session.model_validate(self._normalize_persisted_selections(raw))
             if self._foreign_live(session.owner_pid, session.owner_create_time):
                 continue
             self._stamp_owner(session)
@@ -503,7 +517,7 @@ class Registry:
             session.pid = None
             self.sessions[session.session_id] = session
         for raw in payload.get("tasks") or []:
-            task = Task.model_validate(raw)
+            task = Task.model_validate(self._normalize_persisted_selections(raw))
             if self._foreign_live(task.owner_pid, task.owner_create_time):
                 continue
             self._stamp_owner(task)
@@ -773,6 +787,7 @@ class Registry:
                 raise ValueError("request_id must be a UUID") from None
         agent_cfg = self.config.get(agent)
         cloud = agent_cfg.protocol == 'cloud'
+        generic_acp = uses_generic_acp_selection(agent_cfg)
         if not cloud and not cwd:
             raise ValueError('cwd is required for local agents')
         cwd_path = Path(cwd or '.')
@@ -845,16 +860,16 @@ class Registry:
                     cwd=resolved_cwd,
                     repo=repo if repo is not None else (agent_cfg.cloud.repo if agent_cfg.cloud else None),
                     ref=ref if ref is not None else (agent_cfg.cloud.ref if agent_cfg.cloud else None),
-                    model=None if cloud else model,
-                    effort=None if cloud else effort,
+                    model=None if cloud or generic_acp else model,
+                    effort=None if cloud or generic_acp else effort,
                     title=title,
                     proc_state=ProcState.spawning,
                 )
                 self._stamp_owner(session)
                 self.sessions[session.session_id] = session
-            if model and not cloud:
+            if model and not (cloud or generic_acp):
                 session.model = model
-            if effort and not cloud:
+            if effort and not (cloud or generic_acp):
                 session.effort = effort
             if title:
                 session.title = title
@@ -876,6 +891,7 @@ class Registry:
                 remote={key: value for key, value in session.remote.items()
                         if key in {'provider', 'url', 'agent_id', 'session_id', 'devin_mode', 'resumable'}},
                 model=model or session.model,
+                model_explicit=bool(model),
                 effort=effort or session.effort,
                 status=TaskStatus.queued,
                 notify_caller=notify_caller,
@@ -1369,7 +1385,7 @@ class Registry:
         for raw in rows:
             if isinstance(raw, dict) and raw.get("task_id") == task_id:
                 try:
-                    return Task.model_validate(raw)
+                    return Task.model_validate(self._normalize_persisted_selections(raw))
                 except ValueError:
                     return None
         return None

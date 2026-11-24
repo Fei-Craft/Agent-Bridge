@@ -22,7 +22,7 @@ from acp.schema import (
     RequestPermissionResponse,
 )
 
-from agent_bridge.acp_config import config_option_values
+from agent_bridge.acp_config import config_option_values, config_select_ids_for_category
 from agent_bridge.adapters.base import STDIO_LIMIT, Adapter
 from agent_bridge.claude_meta import (
     CLAUDE_MODE_BYPASS,
@@ -40,7 +40,7 @@ from agent_bridge.minimax_meta import (
     resolve_minimax_effort,
     resolve_minimax_model,
 )
-from agent_bridge.models import Session, Task, TaskFailure, TurnResult, dsh_effort, grok_effort
+from agent_bridge.models import Session, Task, TaskFailure, TurnResult, dsh_effort, grok_effort, validate_selection
 from agent_bridge.opencode_meta import resolve_opencode_effort
 from agent_bridge.processes import (
     drop_pid,
@@ -68,12 +68,16 @@ GROK_SET_MODEL_METHODS = ("session/setModel", "session/set_model")
 # These workers' session/load replays persisted history as session/update
 # notifications. session/resume is advertised and skips that replay.
 _RESUME_AGENTS = frozenset({"kimi", "opencode", "claude", "zcode", "minimax"})
-_CONFIG_OPTION_AGENTS = frozenset(
-    {"kimi", "opencode", "claude", "devin", "cursor", "dsh", "zcode", "minimax"}
-)
 _MODEL_EFFORT_AGENTS = frozenset(
     {"grok", "dsh", "kimi", "opencode", "claude", "devin", "cursor", "zcode", "minimax"}
 )
+_GENERIC_EFFORT_OPTIONS = ("thought_level", "effort", "reasoning_effort", "thinking")
+_GENERIC_EFFORT_ALIASES = {"max": "xhigh", "off": "none"}
+
+
+def uses_generic_acp_selection(agent: AgentConfig) -> bool:
+    return agent.protocol == "acp" and agent.name not in _MODEL_EFFORT_AGENTS
+
 
 # Handshake-style RPCs (initialize, session/new, session/load, setModel)
 # normally answer in seconds. A worker that wedges before the prompt would
@@ -1020,7 +1024,7 @@ class AcpAdapter(Adapter):
 
     def _remember_config_options(self, live: _Live, response: Any) -> None:
         """Cache the `configOptions` snapshot a lifecycle response carries."""
-        if self.agent.name not in _CONFIG_OPTION_AGENTS:
+        if self.agent.name == "grok":
             return
         options = getattr(response, "config_options", None)
         if isinstance(options, (list, tuple)):
@@ -1032,7 +1036,7 @@ class AcpAdapter(Adapter):
         session: Session,
         config_id: str,
         value: str,
-    ) -> None:
+    ) -> str | None:
         assert live.conn is not None
         response = await self._rpc(
             live.conn.set_config_option(
@@ -1044,8 +1048,10 @@ class AcpAdapter(Adapter):
             session,
         )
         self._remember_config_options(live, response)
+        current, _ = config_option_values(getattr(response, "config_options", None), config_id)
+        return current
 
-    def _remember_applied_model(self, live: _Live, model: str) -> None:
+    def _remember_applied_model(self, live: _Live, model: str | None) -> None:
         """Record the live model and drop a stale per-model effort.
 
         OpenCode (and Kimi thinking) reset the variant when the model
@@ -1056,32 +1062,47 @@ class AcpAdapter(Adapter):
             live.applied_effort = None
         live.applied_model = model
 
-    async def _sync_model_option(self, live: _Live, session: Session) -> None:
-        """Apply ``session.model`` through the typed ``model`` config option.
+    async def _sync_model_option(
+        self, live: _Live, session: Session, *, model: str | None = None, option_id: str = "model",
+    ) -> None:
+        """Apply the requested model through the typed ``model`` config option.
 
         A model the coordinator named explicitly and that this session does
         not offer must fail the turn, not silently run on the default. The
         error names the real options.
         """
-        if not session.model or session.model == live.applied_model:
+        verify = model is not None
+        model = model or session.model
+        if not model or (not verify and model == live.applied_model):
             return
-        current_model, _ = config_option_values(live.config_options, "model")
-        if session.model == current_model:
+        current_model, _ = config_option_values(live.config_options, option_id)
+        if model == current_model:
             # Already the session's model (commonly the default a coordinator
             # names explicitly).
-            self._remember_applied_model(live, session.model)
+            self._remember_applied_model(live, model)
             return
         try:
-            await self._set_config_option(live, session, "model", session.model)
+            confirmed = await self._set_config_option(live, session, option_id, model)
         except AcpUnavailableError:
             raise
         except Exception as exc:
-            _, offered = config_option_values(live.config_options, "model")
+            _, offered = config_option_values(live.config_options, option_id)
             raise RuntimeError(
-                f"{self.agent.name} rejected model {session.model!r}; "
+                f"{self.agent.name} rejected model {model!r}; "
                 f"session advertises {offered or 'no models'}"
             ) from exc
-        self._remember_applied_model(live, session.model)
+        if verify:
+            self._warn_config_mismatch(live, option_id, model, confirmed)
+        self._remember_applied_model(live, confirmed if verify else model)
+
+    def _warn_config_mismatch(
+        self, live: _Live, option_id: str, requested: str, confirmed: str | None,
+    ) -> None:
+        if requested != confirmed:
+            outcome = f"returned {confirmed!r}" if confirmed is not None else "did not confirm a value"
+            live.pending_warnings.append(
+                f"{self.agent.name} requested {option_id}={requested!r}; worker {outcome}"
+            )
 
     async def _sync_cursor_selection(self, live: _Live, session: Session) -> None:
         if self.agent.name != "cursor" or live.conn is None or not session.native_session_id:
@@ -1525,7 +1546,82 @@ class AcpAdapter(Adapter):
             return
         live.applied_effort = level
 
-    async def _sync_selection(self, live: _Live, session: Session) -> None:
+    async def _sync_generic_acp_selection(
+        self, live: _Live, session: Session, task: Task | None,
+    ) -> None:
+        """Apply advertised config without losing a tiered request on session reload."""
+        if not uses_generic_acp_selection(self.agent) or live.conn is None or not session.native_session_id:
+            return
+        selected_model = (task.model if task is not None else None) or session.model
+        inherits_model = (task is None or not task.model_explicit) and selected_model == session.model
+        tier = session.acp_model_tier if inherits_model else None
+        model = selected_model
+        if model:
+            model_option_id = next(iter(config_select_ids_for_category(live.config_options, "model")), "model")
+            current, offered = config_option_values(live.config_options, model_option_id)
+            if current is None and not offered:
+                live.pending_warnings.append(
+                    f"{self.agent.name} does not advertise a model option; model={model!r} was ignored"
+                )
+            else:
+                family, _, suffix = model.rpartition("-")
+                if model != current and model not in offered and family in offered and (
+                    suffix in {"off", "low", "medium", "high", "xhigh", "max"}
+                ):
+                    model, tier = family, suffix
+                await self._sync_model_option(live, session, model=model, option_id=model_option_id)
+                if live.applied_model is not None:
+                    try:
+                        validate_selection(live.applied_model, 'model')
+                    except ValueError:
+                        live.pending_warnings.append(
+                            f"{self.agent.name} returned a model ID that does not match the request format; "
+                            "not saved as a session preference"
+                        )
+                    else:
+                        substituted = live.applied_model != model
+                        session.model = live.applied_model if substituted else selected_model
+                        session.acp_model_tier = tier if substituted or model == selected_model else None
+        if task is not None and task.effort is not None:
+            session.effort = task.effort
+        effort = session.effort or tier
+        if not effort:
+            return
+        advertised: dict[str, list[str]] = {}
+        effort_option_ids = config_select_ids_for_category(live.config_options, "thought_level")
+        for option_id in dict.fromkeys((*effort_option_ids, *_GENERIC_EFFORT_OPTIONS)):
+            current, offered = config_option_values(live.config_options, option_id)
+            if offered:
+                advertised[option_id] = offered
+            level = next(
+                (value for value in (effort, _GENERIC_EFFORT_ALIASES.get(effort)) if value in offered),
+                None,
+            )
+            if level is None:
+                continue
+            try:
+                confirmed = (
+                    current if level == current else await self._set_config_option(live, session, option_id, level)
+                )
+            except AcpUnavailableError:
+                raise
+            except Exception as exc:
+                live.pending_warnings.append(
+                    f"{self.agent.name} rejected {option_id}={level} for effort={effort}: "
+                    f"{_redact_diagnostic(str(exc))}"
+                )
+            else:
+                self._warn_config_mismatch(live, option_id, level, confirmed)
+                live.applied_effort = confirmed
+            return
+        live.pending_warnings.append(
+            f"{self.agent.name} effort={effort} has no counterpart; "
+            f"session advertises effort options {advertised or '(none)'}"
+        )
+
+    async def _sync_selection(
+        self, live: _Live, session: Session, task: Task | None = None,
+    ) -> None:
         try:
             await self._sync_grok_model(live, session)
             await self._sync_cursor_selection(live, session)
@@ -1536,6 +1632,7 @@ class AcpAdapter(Adapter):
             await self._sync_dsh_selection(live, session)
             await self._sync_zcode_selection(live, session)
             await self._sync_minimax_selection(live, session)
+            await self._sync_generic_acp_selection(live, session, task)
         except Exception as exc:
             raise self._failure(exc, "session/configure", session) from None
 
@@ -1625,7 +1722,7 @@ class AcpAdapter(Adapter):
             current_effort, _offered = config_option_values(live.config_options, "reasoning_effort")
             live.applied_effort = current_effort or None
 
-    async def ensure_session(self, session: Session) -> None:
+    async def ensure_session(self, session: Session, *, task: Task | None = None) -> None:
         live = self._live.get(session.session_id)
         if (
             live
@@ -1650,7 +1747,7 @@ class AcpAdapter(Adapter):
                 session.native_session_id = None
                 await self.shutdown(session)
             else:
-                await self._sync_selection(live, session)
+                await self._sync_selection(live, session, task)
                 return
         live = await self._spawn(session)
         native = session.native_session_id
@@ -1676,7 +1773,7 @@ class AcpAdapter(Adapter):
                 load_failure = exc
             else:
                 self._remember_config_options(live, revived)
-                await self._sync_selection(live, session)
+                await self._sync_selection(live, session, task)
                 return
         created = await self._rpc(
             self._call_new_session(live.conn, session.cwd, self._new_session_meta(session)),
@@ -1712,14 +1809,14 @@ class AcpAdapter(Adapter):
             # effort-only dispatch does not raise a spurious warning, and let
             # _sync_grok_model switch the model via session/setModel.
             live.applied_effort = grok_effort(session.effort)
-        await self._sync_selection(live, session)
+        await self._sync_selection(live, session, task)
 
     async def run_turn(self, session: Session, task: Task) -> TurnResult:
         live = self._live.get(session.session_id)
         if live is not None:
             live.stderr_tail = ""
         try:
-            await self.ensure_session(session)
+            await self.ensure_session(session, task=task)
         except Exception as exc:
             raise self._failure(exc, "process_start", session) from None
         live = self._live[session.session_id]
@@ -1727,11 +1824,6 @@ class AcpAdapter(Adapter):
         live.client.reset_turn()
         warnings: list[str] = live.pending_warnings
         live.pending_warnings = []
-        if self.agent.name not in _MODEL_EFFORT_AGENTS and (task.model or task.effort):
-            warnings.append(
-                f"{self.agent.name} has no model/effort selection; "
-                f"model={task.model!r} effort={task.effort!r} were ignored"
-            )
         append_event(session.session_id, "prompt_sent", {"text": task.message}, self.home)
         try:
             prompt = live.conn.prompt(

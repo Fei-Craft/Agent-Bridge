@@ -378,6 +378,188 @@ async def test_acp_echo_and_spawn_environment(hub, tmp_path, monkeypatch):
     assert not registry.worker_tokens.scopes
 
 
+@pytest.mark.parametrize(
+    ('model', 'effort', 'observed_model', 'observed_effort', 'warning'),
+    [
+        ('family', 'max', 'family', 'xhigh', None),
+        ('family', 'off', 'family', 'none', None),
+        ('family-xhigh', 'high', 'family', 'high', None),
+        ('family-xhigh', None, 'family', 'xhigh', None),
+        ('family-high', 'max', 'family-high', None, 'effort=max has no counterpart'),
+        ('family', 'medium', 'family', None, 'effort=medium has no counterpart'),
+        ('family', 'high', 'family', None, 'rejected thought_level=high for effort=high'),
+    ],
+)
+async def test_generic_acp_selection_through_hub(
+    hub, tmp_path, model, effort, observed_model, observed_effort, warning,
+):
+    client, registry = hub
+    registry.config.agents['echo'] = AgentConfig(
+        name='echo', protocol='acp', revivable=True,
+        command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
+        env={'BRIDGE_ECHO_SELECTION': '1', 'BRIDGE_ECHO_REJECT_HIGH': str(int(model == 'family' and effort == 'high'))},
+    )
+    body = {'message': 'hello', 'cwd': str(tmp_path), 'model': model, 'effort': effort}
+    result = (await client.post('/v1/agents/echo/invoke', json=body)).json()
+    assert result['status'] == 'completed'
+    assert result['model'] == model
+    assert result['observed_model'] == observed_model
+    assert result['observed_effort'] == observed_effort
+    if warning:
+        assert len(result['warnings']) == 1
+        assert warning in result['warnings'][0]
+    else:
+        assert not result['warnings']
+    if model == 'family-xhigh' and effort is None:
+        session = registry.sessions[result['session_id']]
+        await registry._adapter_for(session).shutdown(session)
+        follow_up = (await client.post('/v1/agents/echo/invoke', json={
+            'message': 'follow-up', 'cwd': str(tmp_path), 'session_id': session.session_id,
+        })).json()
+        assert follow_up['status'] == 'completed'
+        assert follow_up['result_text'] == 'loaded:follow-up'
+        assert follow_up['model'] == model
+        assert follow_up['observed_model'] == 'family'
+        assert follow_up['observed_effort'] == 'xhigh'
+        assert not follow_up['warnings']
+
+
+@pytest.mark.parametrize('override_effort', [None, 'low'])
+async def test_rejected_generic_acp_model_does_not_poison_follow_up(hub, tmp_path, override_effort):
+    client, registry = hub
+    registry.config.agents['echo'] = AgentConfig(
+        name='echo', protocol='acp',
+        command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
+        env={'BRIDGE_ECHO_SELECTION': '1'},
+    )
+    path = '/v1/agents/echo/invoke'
+    body = {'message': 'hello', 'cwd': str(tmp_path)}
+    first = (await client.post(path, json={**body, 'model': 'family-xhigh'})).json()
+    assert first['status'] == 'completed'
+    body['session_id'] = first['session_id']
+    rejected = (await client.post(path, json={**body, 'model': 'unknown-model', 'effort': override_effort})).json()
+    assert rejected['status'] == 'failed'
+    assert rejected['model'] == 'unknown-model'
+    assert rejected['effort'] == override_effort
+    assert "rejected model 'unknown-model'" in rejected['error']
+    follow_up = (await client.post(path, json=body)).json()
+    assert follow_up['status'] == 'completed'
+    assert follow_up['result_text'] == 'echo:hello'
+    assert follow_up['model'] == 'family-xhigh'
+    assert follow_up['observed_model'] == 'family'
+    assert follow_up['observed_effort'] == 'xhigh'
+
+
+async def test_generic_acp_selection_warns_when_not_advertised(hub, tmp_path):
+    client, registry = hub
+    registry.config.agents['echo'] = AgentConfig(
+        name='echo', protocol='acp', command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
+    )
+    result = (await client.post('/v1/agents/echo/invoke', json={
+        'message': 'hello', 'cwd': str(tmp_path), 'model': 'family', 'effort': 'max',
+    })).json()
+    assert result['status'] == 'completed'
+    assert result['observed_model'] is None
+    assert result['observed_effort'] is None
+    assert 'model=\'family\' was ignored' in result['warnings'][0]
+    assert 'effort=max has no counterpart' in result['warnings'][1]
+
+
+async def test_generic_acp_reports_worker_confirmed_model_and_effort(hub, tmp_path):
+    client, registry = hub
+    registry.config.agents['echo'] = AgentConfig(
+        name='echo', protocol='acp',
+        command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
+        env={
+            'BRIDGE_ECHO_SELECTION': '1', 'BRIDGE_ECHO_COERCE_MODEL': '1',
+            'BRIDGE_ECHO_COERCE_EFFORT': '1',
+        },
+    )
+    result = (await client.post('/v1/agents/echo/invoke', json={
+        'message': 'hello', 'cwd': str(tmp_path), 'model': 'family-high', 'effort': 'high',
+    })).json()
+    assert result['status'] == 'completed'
+    assert (result['model'], result['observed_model']) == ('family-high', 'family')
+    assert (result['effort'], result['observed_effort']) == ('high', 'xhigh')
+    assert len(result['warnings']) == 2
+    assert "returned 'family'" in result['warnings'][0]
+    assert "returned 'xhigh'" in result['warnings'][1]
+    assert registry.sessions[result['session_id']].model == 'family'
+
+
+async def test_generic_acp_does_not_persist_invalid_worker_model(hub, bridge_home, tmp_path):
+    client, registry = hub
+    registry.config.agents['echo'] = AgentConfig(
+        name='echo', protocol='acp',
+        command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
+        env={'BRIDGE_ECHO_SELECTION': '1', 'BRIDGE_ECHO_MODEL_REPLACEMENT': 'worker model'},
+    )
+    path = '/v1/agents/echo/invoke'
+    body = {'message': 'hello', 'cwd': str(tmp_path)}
+    first = (await client.post(path, json={**body, 'model': 'default-model'})).json()
+    assert first['status'] == 'completed'
+    sid = first['session_id']
+    changed = (await client.post(path, json={**body, 'session_id': sid, 'model': 'family'})).json()
+    assert changed['status'] == 'completed'
+    assert changed['observed_model'] == 'worker model'
+    assert registry.sessions[sid].model == 'default-model'
+    assert any('not saved as a session preference' in warning for warning in changed['warnings'])
+    follow_up = (await client.post(path, json={**body, 'session_id': sid})).json()
+    assert follow_up['status'] == 'completed'
+    assert follow_up['model'] == 'default-model'
+    assert await registry.flush_state()
+    persisted = json.loads((bridge_home / 'state.json').read_text(encoding='utf-8'))
+    assert next(row for row in persisted['sessions'] if row['session_id'] == sid)['model'] == 'default-model'
+
+
+async def test_generic_acp_uses_config_categories_with_custom_ids(hub, tmp_path):
+    client, registry = hub
+    registry.config.agents['echo'] = AgentConfig(
+        name='echo', protocol='acp',
+        command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
+        env={'BRIDGE_ECHO_SELECTION': '1', 'BRIDGE_ECHO_CATEGORIZED': '1'},
+    )
+    result = (await client.post('/v1/agents/echo/invoke', json={
+        'message': 'hello', 'cwd': str(tmp_path), 'model': 'family-xhigh',
+    })).json()
+    assert result['status'] == 'completed'
+    assert (result['observed_model'], result['observed_effort']) == ('family', 'xhigh')
+    assert result['warnings'] == []
+
+
+@pytest.mark.parametrize('reselect_model', [False, True])
+async def test_generic_acp_substituted_model_inferred_effort_after_reload(hub, bridge_home, tmp_path, reselect_model):
+    client, registry = hub
+    registry.config.agents['echo'] = AgentConfig(
+        name='echo', protocol='acp', revivable=True,
+        command=[sys.executable, str(Path(__file__).with_name('echo_agent.py'))],
+        env={'BRIDGE_ECHO_SELECTION': '1', 'BRIDGE_ECHO_COERCE_MODEL': '1'},
+    )
+    path = '/v1/agents/echo/invoke'
+    body = {'message': 'hello', 'cwd': str(tmp_path)}
+    first = (await client.post(path, json={**body, 'model': 'other-family-xhigh'})).json()
+    assert first['status'] == 'completed'
+    assert (first['observed_model'], first['observed_effort']) == ('family', 'xhigh')
+    assert "returned 'family'" in first['warnings'][0]
+    session_id = first['session_id']
+    if reselect_model:
+        reselected = (await client.post(path, json={
+            **body, 'session_id': session_id, 'model': 'family',
+        })).json()
+        assert reselected['status'] == 'completed'
+    session = registry.sessions[session_id]
+    await registry._adapter_for(session).shutdown(session)
+    persisted = json.loads((bridge_home / 'state.json').read_text(encoding='utf-8'))
+    row = next(row for row in persisted['sessions'] if row['session_id'] == session_id)
+    registry.sessions[session_id] = type(session).model_validate(row)
+    follow_up = (await client.post(path, json={**body, 'session_id': session_id})).json()
+    assert follow_up['status'] == 'completed'
+    assert follow_up['result_text'] == 'loaded:hello'
+    assert follow_up['observed_model'] == 'family'
+    assert follow_up['observed_effort'] == (None if reselect_model else 'xhigh')
+    assert follow_up['warnings'] == []
+
+
 def test_hub_config(bridge_home):
     bridge_home.mkdir()
     (bridge_home / 'agents.toml').write_text('[hub]\nhost="localhost"\nport=9000\nmax_depth=2\n')

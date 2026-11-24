@@ -116,6 +116,7 @@ class Session(BaseModel):
     proc_state: ProcState = ProcState.idle_unloaded
     model: Selection | None = None
     effort: EffortSelection | None = None
+    acp_model_tier: str | None = None
     title: str | None = None
     turns: int = 0
     created_at: str = Field(default_factory=iso)
@@ -153,6 +154,7 @@ class Task(BaseModel):
     ref: str | None = None
     remote: dict[str, Any] = Field(default_factory=dict)
     model: Selection | None = None
+    model_explicit: bool = Field(default=False, exclude=True)
     effort: EffortSelection | None = None
     observed_model: str | None = None
     observed_effort: str | None = None

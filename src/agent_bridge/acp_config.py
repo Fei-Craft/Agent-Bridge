@@ -37,6 +37,17 @@ def config_option_values(config_options: Any, option_id: str) -> tuple[str | Non
     return None, []
 
 
+def config_select_ids_for_category(config_options: list[Any], category: str) -> list[str]:
+    ids: list[str] = []
+    for option in config_options:
+        data = _as_dict(option)
+        if data is not None and data.get("type") == "select" and data.get("category") == category:
+            option_id = data.get("id")
+            if isinstance(option_id, str) and option_id:
+                ids.append(option_id)
+    return ids
+
+
 def _flatten(raw: Any) -> list[str]:
     """Collect option values, descending into groups.
 
