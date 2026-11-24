@@ -80,6 +80,7 @@ JSON request keys match the corresponding MCP tool arguments.
 |---|---|---|
 | GET | `/v1/health` | readiness |
 | GET | `/v1/agents` | list_agents |
+| GET | `/v1/agents/{agent}/models?cwd=/abs/project&refresh=false` | list_models (admin API only; not on the remote gateway) |
 | PUT | `/v1/preferences` | set_preferences: mode, instructions |
 | POST | `/v1/tasks` | dispatch_task: agent, message, cwd; optional session_id, model, effort, title, user_requested, request_id |
 | GET | `/v1/tasks/{id}` | check_task |

@@ -179,7 +179,8 @@ message / Cursor follow-up run 发送结果；交付 turn 不增加深度、不�
 `agent-bridge approvals list`，再 `approve 审批ID` 或 `deny 审批ID`。
 审批随 token 过期，重启丢弃。管理端（远程网关不开放）REST：GET `/v1/approvals`、
 POST `/v1/approvals/{id}/approve` 或 `/deny`、GET `/v1/remote`、
-PUT `/v1/remote/public-url`（JSON public_url 字段）。
+PUT `/v1/remote/public-url`（JSON public_url 字段）、
+GET `/v1/agents/{agent}/models?cwd=绝对项目路径&refresh=false`（list_models，仅本机管理端）。
 
 `agent-bridge ui` 一次性登录码有效60秒，传给浏览器时可能短暂出现在进程参数中；
 `--no-open` 改为输出敏感链接，请勿保存/分享。链接不包含管理 bearer。

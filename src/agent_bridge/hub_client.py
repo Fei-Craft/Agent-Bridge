@@ -24,6 +24,7 @@ ROUTES = {
     'set_remote_public_url': ('PUT', '/v1/remote/public-url', None),
     'get_remote_status': ('GET', '/v1/remote', None),
     'list_agents': ('GET', '/v1/agents', None),
+    'list_models': ('GET', '/v1/agents/{agent}/models', 'agent'),
     'set_preferences': ('PUT', '/v1/preferences', None),
     'dispatch_task': ('POST', '/v1/tasks', None),
     'check_task': ('GET', '/v1/tasks/{task_id}', 'task_id'),

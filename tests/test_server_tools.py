@@ -24,6 +24,7 @@ def test_tools_registered():
         "get_transcript",
         "invoke_agent",
         "list_agents",
+        "list_models",
         "list_sessions",
         "set_preferences",
         "wait_task",

@@ -139,10 +139,11 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                         args[key] = int(args[key])
                 if 'timeout_sec' in args:
                     args['timeout_sec'] = float(args['timeout_sec'])
-                if 'active_only' in args:
-                    if args['active_only'] not in ('true', 'false'):
-                        raise ValueError('active_only must be true or false')
-                    args['active_only'] = args['active_only'] == 'true'
+                for key in ('active_only', 'refresh'):
+                    if key in args:
+                        if args[key] not in ('true', 'false'):
+                            raise ValueError(f'{key} must be true or false')
+                        args[key] = args[key] == 'true'
                 depth = 0
                 if caller and tool in ('dispatch_task', 'invoke'):
                     if caller not in registry.sessions:
