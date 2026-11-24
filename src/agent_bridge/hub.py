@@ -22,6 +22,7 @@ from starlette.routing import Route
 
 from agent_bridge.api import BridgeService, _error, wait_for_result
 from agent_bridge.dashboard import Dashboard, DashboardHeaders
+from agent_bridge.desktop_ipc import serve_desktop
 from agent_bridge.hub_client import ROUTES
 from agent_bridge.paths import ensure_home
 from agent_bridge.persist import file_lock, read_json
@@ -84,7 +85,8 @@ def create_app(registry: Registry | None = None, *, url: str = 'http://127.0.0.1
                     temporary = file.name
                     json.dump(record, file)
                 os.replace(temporary, path)
-                yield
+                async with serve_desktop(registry.home, registry.desktop):
+                    yield
             finally:
                 try:
                     if read_json(path, {}) == record:

@@ -19,7 +19,9 @@ from agent_bridge.adapters.antigravity import AgyAdapter
 from agent_bridge.adapters.cli import CliAdapter
 from agent_bridge.adapters.codex import CodexAdapter
 from agent_bridge.adapters.fake import FakeAdapter
+from agent_bridge.baselines import Baseline
 from agent_bridge.config import AgentConfig, CliConfig, EnvConfig, load_config
+from agent_bridge.desktop_ipc import DesktopIPC
 from agent_bridge.hub import create_app, serve, validate_host
 from agent_bridge.hub_client import HubClient, discover
 from agent_bridge.registry import Registry
@@ -93,6 +95,41 @@ async def worker(hub, tmp_path, monkeypatch):
     finally:
         release.set()
         await registry.wait_task(root['task_id'], timeout_sec=5)
+
+
+async def test_worker_dsh_cannot_use_owner_baselines(worker, tmp_path, monkeypatch):
+    client, registry, _, env = worker
+    cwd = str(tmp_path.resolve())
+    registry.baselines.add(Baseline(baseline_id='private', name='Private', agent='dsh',
+        backend='desktop', cwd=cwd, native_session_id='private-native', source_session_id='private-source'))
+    registry.baselines.set_default(cwd, 'dsh', 'private')
+    monkeypatch.setattr(DesktopIPC, 'connected', property(lambda self: True))
+    monkeypatch.setattr(registry, '_adapter_for', lambda session: FakeAdapter(registry.config.get('fake'), registry.home))
+    headers = {'Authorization': 'Bearer ' + env['AGENT_BRIDGE_HUB_TOKEN']}
+    body = {'agent': 'dsh', 'message': 'peer', 'cwd': cwd}
+
+    for selection in ('default', 'private'):
+        denied = await client.post('/v1/tasks', json={**body, 'baseline': selection}, headers=headers)
+        assert denied.status_code == 400
+        assert 'baseline forks are not available' in denied.json()['error']
+    result = (await client.post('/v1/agents/dsh/invoke', json=body, headers=headers)).json()
+    assert result['ok'] and result['baseline_id'] is None
+    assert registry.sessions[result['session_id']].fork_source_id is None
+    for method, path, args in (
+        ('GET', '/v1/baselines', {'params': {'cwd': cwd}}),
+        ('POST', '/v1/baselines', {'json': {'session_id': result['session_id'], 'name': 'worker'}}),
+        ('PUT', '/v1/baselines/default', {'json': {'cwd': cwd, 'baseline_id': None}}),
+    ):
+        response = await client.request(method, path, headers=headers, **args)
+        assert response.status_code == 403 and 'worker token cannot access' in response.json()['error']
+
+    owner = (await client.post('/v1/agents/dsh/invoke', json=body)).json()
+    assert owner['ok'] and owner['baseline_id'] == 'private'
+    assert registry.sessions[owner['session_id']].fork_source_id == 'private-native'
+    response = await client.get('/v1/sessions/' + owner['session_id'] + '/transcript', headers=headers)
+    assert response.status_code == 403
+    response = await client.post('/v1/tasks', json={**body, 'session_id': owner['session_id']}, headers=headers)
+    assert response.status_code == 403
 
 
 async def test_depth_and_self_dispatch(worker, tmp_path):

@@ -46,6 +46,16 @@ class Adapter(ABC):
             set(self.env_config.set) | set(self.agent.env),
         )
 
+    def can_fork(self) -> bool:
+        """Whether this worker can create a derived session from a source one.
+
+        Defaults to False so a worker never silently produces a blank session
+        where the coordinator asked for an inherited one. Adapters that
+        implement forking override this and must still verify the capability
+        with the running worker before they fork.
+        """
+        return False
+
     @abstractmethod
     async def ensure_session(self, session: Session) -> None: ...
 

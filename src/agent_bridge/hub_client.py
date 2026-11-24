@@ -26,6 +26,9 @@ ROUTES = {
     'list_agents': ('GET', '/v1/agents', None),
     'set_preferences': ('PUT', '/v1/preferences', None),
     'dispatch_task': ('POST', '/v1/tasks', None),
+    'create_baseline': ('POST', '/v1/baselines', None),
+    'list_baselines': ('GET', '/v1/baselines', None),
+    'set_default_baseline': ('PUT', '/v1/baselines/default', None),
     'check_task': ('GET', '/v1/tasks/{task_id}', 'task_id'),
     'wait_task': ('GET', '/v1/tasks/{task_id}/wait', 'task_id'),
     'get_result': ('GET', '/v1/tasks/{task_id}/result', 'task_id'),
@@ -45,7 +48,7 @@ class HubClient:
 
     async def call(self, tool: str, **kwargs: Any) -> dict[str, Any]:
         try:
-            if self.host_manual_mode and tool in {'dispatch_task', 'invoke'} and not kwargs.get('user_requested'):
+            if self.host_manual_mode and tool in {'dispatch_task', 'invoke', 'create_baseline'} and not kwargs.get('user_requested'):
                 raise RuntimeError('coordinator mode is manual: retry with user_requested=true only when the user explicitly requested a worker')
             return await self._call(tool, **kwargs)
         except Exception as exc:

@@ -5,12 +5,14 @@ import os
 import sys
 import time
 import types
+from unittest.mock import AsyncMock
 
 import pytest
 
+from agent_bridge.hub_client import HubClient
 from agent_bridge.processes import reap_subprocess
 from agent_bridge.registry import Registry
-from agent_bridge.server import INSTRUCTIONS, _error, _registry, list_sessions, mcp
+from agent_bridge.server import INSTRUCTIONS, _error, _registry, create_baseline, lifespan, list_sessions, mcp
 
 
 def test_tools_registered():
@@ -18,13 +20,16 @@ def test_tools_registered():
     assert names == [
         "cancel_task",
         "check_task",
+        "create_baseline",
         "dispatch_task",
         "end_session",
         "get_result",
         "get_transcript",
         "invoke_agent",
         "list_agents",
+        "list_baselines",
         "list_sessions",
+        "set_default_baseline",
         "set_preferences",
         "wait_task",
     ]
@@ -50,6 +55,22 @@ def test_error_exposes_exception_type():
         "error": "ValueError: bad cwd",
         "error_type": "ValueError",
     }
+
+
+async def test_manual_mcp_host_requires_user_request_to_create_baseline(monkeypatch):
+    client = HubClient("http://hub")
+    monkeypatch.setenv("AGENT_BRIDGE_MODE", "manual")
+    monkeypatch.setattr("agent_bridge.server.discover", AsyncMock(return_value=client))
+    forward = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(client, "_call", forward)
+    async with lifespan(mcp) as backend:
+        ctx = types.SimpleNamespace(request_context=types.SimpleNamespace(lifespan_context=backend))
+        refused = await create_baseline(ctx, session_id="sess", name="Baseline")
+        assert not refused["ok"] and "coordinator mode is manual" in refused["error"]
+        forward.assert_not_awaited()
+        assert (await create_baseline(ctx, session_id="sess", name="Baseline", user_requested=True))["ok"]
+        forward.assert_awaited_once_with("create_baseline", session_id="sess", name="Baseline",
+                                         description=None, user_requested=True)
 
 
 def test_registry_from_lifespan_context_touches_activity(bridge_home):

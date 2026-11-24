@@ -664,6 +664,33 @@ disabled stall timeout and a 24-hour turn timeout, both configurable per agent.
 Hub/Registry shutdown and idle unload only detach locally, leaving remote work
 and billing intact. Explicitly cancel or end_session to stop cloud work.
 
+## Worker: DeepSeek Harness Desktop
+
+To enable named Desktop forks, run `agent-bridge serve` and install the
+[`dsh-desktop-connector`](dsh-desktop-connector/) directory from the same checkout
+as a local bundle in DSH Desktop's Plugins page. The bundle needs a Desktop Host
+with the in-process Session Controller (introduced on the `0.1.7-rc.2` line).
+No Desktop core patch is needed. Run both processes as the same OS user, not as
+an administrator or service. With a custom `AGENT_BRIDGE_HOME`, set the bundle's
+`bridgeHome` to the same absolute directory. On Windows the bundle invokes
+`agent-bridge` from Desktop's PATH; set its `bridgeExecutable` to the absolute
+path of the installed `agent-bridge.exe` if Desktop cannot find it.
+
+If upgrading from the older standalone connector, disable/uninstall it, delete
+the legacy `dsh-desktop.json` from the Bridge home, and fully restart Desktop
+to rotate its old launch token. The new connector never reads that file. It
+uses a Windows named pipe with a current-user-only ACL and remote clients
+disabled, or a Unix socket (mode 0600 in a mode 0700 directory). It neither
+opens a network port nor uses a token, URL or cookie for IPC.
+
+`list_agents` reports `desktop.connected` and `desktop.fork_available`. When
+connected, new DSH ACP-configured tasks use Desktop; when disconnected, new
+ordinary turns use ACP and forks fail explicitly. Existing sessions stay on
+their original backend, and an interrupted Desktop turn is not replayed. On
+Unix, use a short Bridge home path within the OS socket path-length limit.
+Desktop model selection uses `provider/model` and optional effort. See
+[the Hub baseline workflow](HUB.md#dsh-desktop-baselines).
+
 ## Permissions
 
 Use `agent-bridge callback-secret set NAME` to enter a signing secret (>=32

@@ -83,6 +83,8 @@ class BridgeService:
         notify_caller: bool = False,
         callback_url: str | None = None,
         callback_secret_name: str | None = None,
+        baseline: str | None = None,
+        fork_label: str | None = None,
     ) -> dict[str, Any]:
         """Start a worker turn. Local workers require an absolute existing cwd. Cloud workers ignore cwd and accept optional repo/ref overrides; follow-ups keep their repository/ref. Cloud Cursor model is a model ID; Devin model is a mode, or effort maps off/low/medium/high/max to fast/lite/normal/ultra/ultra. Remote results carry provider IDs, URLs and PRs rather than local file changes. Cancelling Devin terminates the remote session permanently. Local model/effort behavior is unchanged. Pass session_id to continue. Set user_requested=true only when the user explicitly asked for a worker (required in manual mode). Rejected when coordinator.dispatch_enabled is false. For retry deduplication, supply a UUID request_id on the first call and replay the same ID and original arguments; identical retries reuse the task, different arguments are rejected. Bindings are lost on restart and are not shared with other instances. Returns immediately."""
         try:
@@ -102,8 +104,31 @@ class BridgeService:
                 caller_session_id=caller_session_context.get(),
                 callback_url=callback_url,
                 callback_secret_name=callback_secret_name,
+                baseline=baseline,
+                fork_label=fork_label,
             )
             return {"ok": True, **result}
+        except Exception as exc:
+            return _error(exc)
+
+    async def create_baseline(self, session_id: str, name: str, description: str | None = None,
+                              user_requested: bool = False) -> dict[str, Any]:
+        try:
+            return {"ok": True, **await self.registry.create_baseline(
+                session_id, name, description, user_requested=user_requested,
+            )}
+        except Exception as exc:
+            return _error(exc)
+
+    async def list_baselines(self, cwd: str, agent: str = "dsh") -> dict[str, Any]:
+        try:
+            return {"ok": True, **self.registry.list_baselines(cwd, agent)}
+        except Exception as exc:
+            return _error(exc)
+
+    async def set_default_baseline(self, cwd: str, baseline_id: str | None, agent: str = "dsh") -> dict[str, Any]:
+        try:
+            return {"ok": True, **await self.registry.set_default_baseline(cwd, agent, baseline_id)}
         except Exception as exc:
             return _error(exc)
 
